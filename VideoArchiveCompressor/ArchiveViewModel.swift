@@ -5,7 +5,7 @@ import AppKit
 final class ArchiveViewModel: ObservableObject {
     @Published var sourceURL: URL?
     @Published var jobs: [MediaJob] = []
-    @Published var preset: ArchivePreset = .tinyHD
+    @Published var preset: ArchivePreset = .extremeOriginalResolution
     @Published var isScanning = false
     @Published var isRunning = false
     @Published var stopAfterCurrent = false
@@ -13,6 +13,7 @@ final class ArchiveViewModel: ObservableObject {
     @Published var existingBackupCount = 0
     @Published var statusText = "Kies een FCP Library, map of harde schijf."
     @Published var lastError: String?
+    @Published var extremeSummary: String?
 
     private let compressor = MediaCompressor()
 
@@ -73,6 +74,7 @@ final class ArchiveViewModel: ObservableObject {
 
         if url.pathExtension.lowercased() == "fcpbundle" || url.hasDirectoryPath {
             sourceURL = url
+            extremeSummary = nil
             Task { await scan() }
         } else {
             lastError = "Kies een .fcpbundle, map of harde schijf."
@@ -92,16 +94,8 @@ final class ArchiveViewModel: ObservableObject {
             MediaScanner.scan(root: sourceURL)
         }.value
 
-        jobs = result.jobs
-        unsupportedCount = result.unsupportedCount
-        existingBackupCount = result.backupCount
+        applyScanResult(result)
         isScanning = false
-
-        if jobs.isEmpty {
-            statusText = "Geen MOV/MP4/M4V in Original Media gevonden."
-        } else {
-            statusText = "\(jobs.count) video's • \(totalBytes.storageString)"
-        }
     }
 
     func startTest() {
@@ -109,9 +103,177 @@ final class ArchiveViewModel: ObservableObject {
     }
 
     func startFullBatch() {
-        // Safety-first: keep every original until the user has opened the
-        // library in Final Cut and explicitly deletes the backups.
         start(limit: nil, keepBackups: true)
+    }
+
+    func startExtremeOneClick() {
+        guard let root = sourceURL else {
+            lastError = "Kies eerst een harde schijf of hoofdmap."
+            return
+        }
+
+        guard !isRunning else { return }
+
+        if finalCutIsRunning {
+            lastError = "Sluit Final Cut Pro eerst."
+            return
+        }
+
+        if root.pathExtension.lowercased() == "fcpbundle" {
+            lastError = """
+            Extreme One Click is bedoeld voor een hele schijf of hoofdmap.
+            Voor één FCP Library kun je TEST 3 CLIPS / START HELE BATCH gebruiken.
+            """
+            return
+        }
+
+        if existingBackupCount > 0 {
+            lastError = """
+            Er staan nog .VAC_ORIGINAL herstelbestanden op deze bron.
+            Herstel of verwijder die eerst voordat je Extreme One Click gebruikt.
+            """
+            return
+        }
+
+        isRunning = true
+        stopAfterCurrent = false
+        extremeSummary = nil
+        preset = .extremeOriginalResolution
+
+        Task {
+            statusText = "Stap 1/5 • Projecten herkennen…"
+
+            let projects = await Task.detached(priority: .userInitiated) {
+                ArchiveOrganizer.discoverProjects(in: root)
+            }.value
+
+            statusText = "Stap 2/5 • FCP render/proxy/cache opruimen…"
+
+            let cacheBytes = await Task.detached(priority: .userInitiated) {
+                ArchiveOrganizer.purgeGeneratedFinalCutMedia(in: root)
+            }.value
+
+            statusText = "Stap 3/5 • Video's scannen…"
+
+            let scanResult = await Task.detached(priority: .userInitiated) {
+                MediaScanner.scan(root: root)
+            }.value
+
+            applyScanResult(scanResult)
+
+            for i in jobs.indices {
+                jobs[i].state = .queued
+                jobs[i].progress = 0
+                jobs[i].outputBytes = nil
+            }
+
+            // Automatic safety canary: first make 3 genuinely converted
+            // files while keeping originals. If one fails compatibility,
+            // stop before the drive is reorganized.
+            var verifiedURLs: [URL] = []
+            var processedIndices = Set<Int>()
+
+            if !jobs.isEmpty {
+                statusText = "Stap 3/5 • Veiligheidstest op eerste video's…"
+
+                for index in jobs.indices {
+                    if verifiedURLs.count >= 3 { break }
+                    if stopAfterCurrent { break }
+
+                    let outcome = await compressOne(
+                        index: index,
+                        keepBackup: true
+                    )
+
+                    processedIndices.insert(index)
+
+                    switch outcome {
+                    case .converted:
+                        verifiedURLs.append(jobs[index].url)
+
+                    case .skipped:
+                        continue
+
+                    case .failed(let message):
+                        isRunning = false
+                        lastError = """
+                        Extreme One Click is gestopt tijdens de automatische veiligheidstest.
+
+                        \(jobs[index].fileName)
+                        \(message)
+
+                        Succesvolle testclips hebben hun .VAC_ORIGINAL-backup behouden.
+                        """
+                        return
+                    }
+                }
+
+                if stopAfterCurrent {
+                    isRunning = false
+                    statusText = "Gestopt."
+                    return
+                }
+
+                // Canary passed. Remove only the backups made by this run.
+                for url in verifiedURLs {
+                    deleteBackup(for: url)
+                }
+
+                statusText = "Stap 3/5 • Alle video's extreem comprimeren…"
+
+                for index in jobs.indices {
+                    if processedIndices.contains(index) { continue }
+                    if stopAfterCurrent { break }
+
+                    _ = await compressOne(
+                        index: index,
+                        keepBackup: false
+                    )
+                }
+            }
+
+            if stopAfterCurrent {
+                isRunning = false
+                statusText = "Gestopt • \(savedBytes.storageString) bespaard"
+                return
+            }
+
+            statusText = "Stap 4/5 • Losse bestanden sorteren…"
+
+            let loose = await Task.detached(priority: .userInitiated) {
+                ArchiveOrganizer.sortLooseFiles(
+                    in: root,
+                    protecting: projects
+                )
+            }.value
+
+            statusText = "Stap 5/5 • Projecten per jaar/type ordenen…"
+
+            let organized = await Task.detached(priority: .userInitiated) {
+                ArchiveOrganizer.organizeProjects(
+                    projects,
+                    in: root
+                )
+            }.value
+
+            let totalSaved = savedBytes + cacheBytes
+
+            extremeSummary = """
+            Klaar.
+
+            Ruimte bespaard: \(totalSaved.storageString)
+            Video's verwerkt: \(jobs.filter { if case .done = $0.state { return true }; return false }.count)
+            Projecten verplaatst: \(organized.moved)
+            Losse bestanden gesorteerd: \(loose.moved)
+            Overgeslagen / handmatig controleren: \(organized.skipped + loose.skipped + unsupportedCount)
+
+            Alles staat onder:
+            \(ArchiveOrganizer.archiveFolderName)
+            """
+
+            statusText = "Extreme opruimbeurt klaar • \(totalSaved.storageString) bespaard"
+            isRunning = false
+        }
     }
 
     func stop() {
@@ -125,7 +287,62 @@ final class ArchiveViewModel: ObservableObject {
         statusText = "Huidige clip annuleren…"
     }
 
-    private func start(limit: Int?, keepBackups: Bool) {
+    private enum CompressionOutcome {
+        case converted
+        case skipped
+        case failed(String)
+    }
+
+    private func compressOne(
+        index: Int,
+        keepBackup: Bool
+    ) async -> CompressionOutcome {
+        jobs[index].state = .encoding
+        jobs[index].progress = 0
+
+        do {
+            let newBytes = try await compressor.compress(
+                source: jobs[index].url,
+                preset: preset,
+                keepBackup: keepBackup,
+                onProgress: { [weak self] value in
+                    Task { @MainActor in
+                        guard let self else { return }
+
+                        if self.jobs.indices.contains(index) {
+                            self.jobs[index].progress = value
+                        }
+                    }
+                }
+            )
+
+            jobs[index].outputBytes = newBytes
+            jobs[index].progress = 1
+            jobs[index].state = .done
+            return .converted
+        } catch is CancellationError {
+            jobs[index].state = .failed("geannuleerd")
+            return .failed("geannuleerd")
+        } catch let error as CompressionError {
+            if case .notSmaller = error {
+                jobs[index].state = .skipped(
+                    "al HEVC of geen zinvolle ruimtewinst"
+                )
+                return .skipped
+            }
+
+            jobs[index].state = .failed(error.localizedDescription)
+            return .failed(error.localizedDescription)
+        } catch {
+            jobs[index].state = .failed(error.localizedDescription)
+            return .failed(error.localizedDescription)
+        }
+    }
+
+    private func start(
+        limit: Int?,
+        keepBackups: Bool
+    ) {
         guard !isRunning, !jobs.isEmpty else { return }
 
         if finalCutIsRunning {
@@ -143,63 +360,27 @@ final class ArchiveViewModel: ObservableObject {
         }
 
         Task {
-            let indices = Array(jobs.indices.prefix(limit ?? jobs.count))
+            let indices = Array(
+                jobs.indices.prefix(limit ?? jobs.count)
+            )
 
             for (position, index) in indices.enumerated() {
                 if stopAfterCurrent { break }
 
-                jobs[index].state = .encoding
-                jobs[index].progress = 0
                 statusText = "\(position + 1) / \(indices.count) • \(jobs[index].fileName)"
 
-                do {
-                    let newBytes = try await compressor.compress(
-                        source: jobs[index].url,
-                        preset: preset,
-                        keepBackup: keepBackups,
-                        onProgress: { [weak self] value in
-                            Task { @MainActor in
-                                guard let self else { return }
+                let outcome = await compressOne(
+                    index: index,
+                    keepBackup: keepBackups
+                )
 
-                                if self.jobs.indices.contains(index) {
-                                    self.jobs[index].progress = value
-                                }
-                            }
-                        }
-                    )
-
-                    jobs[index].outputBytes = newBytes
-                    jobs[index].progress = 1
-                    jobs[index].state = .done
-                } catch is CancellationError {
-                    jobs[index].state = .failed("geannuleerd")
+                if case .failed(let message) = outcome,
+                   keepBackups {
+                    lastError = """
+                    Testclip \(jobs[index].fileName) kon niet worden geconverteerd:
+                    \(message)
+                    """
                     break
-                } catch let error as CompressionError {
-                    switch error {
-                    case .notSmaller:
-                        jobs[index].state = .skipped(
-                            error.localizedDescription
-                        )
-                    default:
-                        jobs[index].state = .failed(
-                            error.localizedDescription
-                        )
-
-                        if keepBackups {
-                            lastError = """
-                            Testclip \(jobs[index].fileName) kon niet worden geconverteerd:
-                            \(error.localizedDescription)
-                            """
-                            break
-                        }
-                    }
-                } catch {
-                    jobs[index].state = .failed(error.localizedDescription)
-
-                    if keepBackups {
-                        lastError = "Testclip mislukt:\n\(error.localizedDescription)"
-                        break
-                    }
                 }
             }
 
@@ -282,6 +463,28 @@ final class ArchiveViewModel: ObservableObject {
         Task {
             try? await Task.sleep(nanoseconds: 500_000_000)
             await scan()
+        }
+    }
+
+    private func deleteBackup(for source: URL) {
+        let backup = source
+            .deletingLastPathComponent()
+            .appendingPathComponent(
+                ".\(source.lastPathComponent).VAC_ORIGINAL"
+            )
+
+        try? FileManager.default.removeItem(at: backup)
+    }
+
+    private func applyScanResult(_ result: ScanResult) {
+        jobs = result.jobs
+        unsupportedCount = result.unsupportedCount
+        existingBackupCount = result.backupCount
+
+        if jobs.isEmpty {
+            statusText = "Geen nieuwe MOV/MP4/M4V-video's gevonden."
+        } else {
+            statusText = "\(jobs.count) video's • \(totalBytes.storageString)"
         }
     }
 }
