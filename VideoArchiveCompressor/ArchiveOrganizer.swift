@@ -44,7 +44,11 @@ enum ArchiveOrganizer {
         "video", "videos", "films", "film",
         "bruiloften", "trouwfilms", "weddings",
         "zakelijk", "bedrijven", "corporate",
-        "elements", "elementen", "werk", "jobs"
+        "elements", "elementen", "werk", "jobs",
+        "downloads", "desktop", "documents", "documenten",
+        "pictures", "photos", "afbeeldingen", "fotos", "foto's",
+        "audio", "music", "muziek", "samples",
+        "overig", "misc", "unsorted", "sorteren", "losse bestanden"
     ]
 
     private static let protectedSystemFolders: Set<String> = [
