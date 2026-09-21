@@ -32,7 +32,12 @@ enum MediaScanner {
             if values?.isDirectory == true {
                 let name = url.lastPathComponent.lowercased()
 
-                if ["render files", "transcoded media", "analysis files"].contains(name) {
+                if [
+                    "render files",
+                    "transcoded media",
+                    "analysis files",
+                    ArchiveOrganizer.archiveFolderName.lowercased()
+                ].contains(name) {
                     enumerator.skipDescendants()
                     continue
                 }
