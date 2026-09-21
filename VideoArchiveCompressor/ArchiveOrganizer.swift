@@ -366,6 +366,12 @@ enum ArchiveOrganizer {
                 continue
             }
 
+            if project.kind == .folder &&
+                folderContainsExternallyLinkedFinalCutLibrary(project.url) {
+                skipped += 1
+                continue
+            }
+
             let destinationFolder = archiveRoot
                 .appendingPathComponent(
                     String(project.year),
@@ -558,7 +564,10 @@ enum ArchiveOrganizer {
 
         guard let enumerator = fm.enumerator(
             at: bundle,
-            includingPropertiesForKeys: [.isSymbolicLinkKey],
+            includingPropertiesForKeys: [
+                .isSymbolicLinkKey,
+                .isAliasFileKey
+            ],
             options: [.skipsHiddenFiles]
         ) else {
             return false
@@ -569,13 +578,45 @@ enum ArchiveOrganizer {
 
             if lower.contains("/original media/") {
                 let values = try? url.resourceValues(
-                    forKeys: [.isSymbolicLinkKey]
+                    forKeys: [
+                        .isSymbolicLinkKey,
+                        .isAliasFileKey
+                    ]
                 )
 
-                if values?.isSymbolicLink == true {
+                if values?.isSymbolicLink == true ||
+                    values?.isAliasFile == true {
                     return true
                 }
             }
+        }
+
+        return false
+    }
+
+    private static func folderContainsExternallyLinkedFinalCutLibrary(
+        _ folder: URL
+    ) -> Bool {
+        let fm = FileManager.default
+
+        guard let enumerator = fm.enumerator(
+            at: folder,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return false
+        }
+
+        while let url = enumerator.nextObject() as? URL {
+            guard url.pathExtension.lowercased() == "fcpbundle" else {
+                continue
+            }
+
+            if finalCutBundleHasExternalMedia(url) {
+                return true
+            }
+
+            enumerator.skipDescendants()
         }
 
         return false
