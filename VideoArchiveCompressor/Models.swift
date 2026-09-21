@@ -2,6 +2,7 @@ import AVFoundation
 import Foundation
 
 enum ArchivePreset: String, CaseIterable, Identifiable {
+    case extremeOriginalResolution
     case tinyHD
     case compact4K
     case preserveResolution
@@ -10,6 +11,7 @@ enum ArchivePreset: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
+        case .extremeOriginalResolution: return "Extreme • resolutie behouden"
         case .tinyHD: return "Tiny HD"
         case .compact4K: return "Compact 4K"
         case .preserveResolution: return "Resolutie behouden"
@@ -18,8 +20,10 @@ enum ArchivePreset: String, CaseIterable, Identifiable {
 
     var subtitle: String {
         switch self {
+        case .extremeOriginalResolution:
+            return "Zelfde resolutie • HEVC • agressieve bitrate • snel archief"
         case .tinyHD:
-            return "Max. 1080p HEVC • kleinste archief • aanbevolen"
+            return "Max. 1080p HEVC • kleinste archief"
         case .compact4K:
             return "Max. 4K HEVC • scherper • grotere bestanden"
         case .preserveResolution:
@@ -29,6 +33,8 @@ enum ArchivePreset: String, CaseIterable, Identifiable {
 
     var exportPresetName: String {
         switch self {
+        case .extremeOriginalResolution:
+            return AVAssetExportPresetHEVCHighestQuality
         case .tinyHD:
             return AVAssetExportPresetHEVC1920x1080
         case .compact4K:
