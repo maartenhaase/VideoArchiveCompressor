@@ -5,6 +5,7 @@ struct ContentView: View {
     @EnvironmentObject private var model: ArchiveViewModel
     @State private var isTargeted = false
     @State private var showFullBatchConfirm = false
+    @State private var showExtremeConfirm = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -14,6 +15,7 @@ struct ContentView: View {
             ScrollView {
                 VStack(spacing: 18) {
                     sourceCard
+                    extremeCard
                     presetCard
                     actionCard
                     queueCard
@@ -34,6 +36,24 @@ struct ContentView: View {
             }
         } message: {
             Text(model.lastError ?? "")
+        }
+        .confirmationDialog(
+            "EXTREME ONE CLICK starten?",
+            isPresented: $showExtremeConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("JA — ruim deze schijf op", role: .destructive) {
+                model.startExtremeOneClick()
+            }
+
+            Button("Annuleer", role: .cancel) {}
+        } message: {
+            Text(
+                "De app verwijdert opnieuw maakbare Final Cut render/proxy/analysebestanden, " +
+                "comprimeert geschikte video's agressief met behoud van resolutie, " +
+                "controleert eerst automatisch enkele FCP-clips en ordent daarna projecten en losse bestanden in ARCHIEF_GESORTEERD. " +
+                "Bestanden die niet veilig verwerkt kunnen worden blijven staan."
+            )
         }
         .confirmationDialog(
             "Hele batch starten?",
@@ -63,7 +83,7 @@ struct ContentView: View {
                 Text("Video Archive Compressor")
                     .font(.title2.weight(.semibold))
 
-                Text("Final Cut archief • native macOS • geen Python of FFmpeg")
+                Text("Comprimeren • FCP-archief • hele schijven automatisch opruimen")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
             }
@@ -211,6 +231,88 @@ struct ContentView: View {
             .padding(10)
         } label: {
             Label("1. Bron", systemImage: "folder")
+        }
+    }
+
+    private var extremeCard: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 16) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(Color.accentColor.opacity(0.12))
+                            .frame(width: 58, height: 58)
+
+                        Image(systemName: "wand.and.stars")
+                            .font(.system(size: 27, weight: .semibold))
+                            .foregroundColor(.accentColor)
+                    }
+
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(spacing: 8) {
+                            Text("EXTREME ONE CLICK")
+                                .font(.title3.weight(.bold))
+
+                            Text("HELE SCHIJF")
+                                .font(.caption2.weight(.bold))
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(
+                                    Capsule()
+                                        .fill(Color.accentColor.opacity(0.14))
+                                )
+                                .foregroundColor(.accentColor)
+                        }
+
+                        Text(
+                            "1. FCP render/proxy/cache opruimen  •  " +
+                            "2. video's HEVC comprimeren met dezelfde resolutie  •  " +
+                            "3. projecten herkennen  •  " +
+                            "4. sorteren op jaar/type  •  " +
+                            "5. documenten, screenshots, foto's, audio en overige bestanden ordenen"
+                        )
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Spacer()
+
+                    Button("RUIM ALLES OP") {
+                        showExtremeConfirm = true
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .disabled(
+                        model.sourceURL == nil ||
+                        model.isRunning ||
+                        model.isScanning ||
+                        model.finalCutIsRunning
+                    )
+                }
+
+                if let summary = model.extremeSummary {
+                    Divider()
+
+                    Label(summary, systemImage: "checkmark.circle.fill")
+                        .font(.subheadline)
+                        .foregroundColor(.green)
+                        .textSelection(.enabled)
+                } else {
+                    Label(
+                        "Projectbestanden blijven bij hun project. FCP-bundles met externe/symlinked media worden niet automatisch verplaatst.",
+                        systemImage: "shield.checkered"
+                    )
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                }
+            }
+            .padding(12)
+        } label: {
+            Label(
+                "Automatische archiefmodus",
+                systemImage: "externaldrive.fill.badge.checkmark"
+            )
         }
     }
 
@@ -440,8 +542,8 @@ private struct PresetTile: View {
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.leading)
 
-                if preset == .tinyHD {
-                    Text("AANBEVOLEN")
+                if preset == .extremeOriginalResolution {
+                    Text("EXTREME / AANBEVOLEN")
                         .font(.caption2.weight(.bold))
                         .foregroundColor(.accentColor)
                 }
