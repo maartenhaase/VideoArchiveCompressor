@@ -47,8 +47,8 @@ struct ContentView: View {
             Button("Annuleer", role: .cancel) {}
         } message: {
             Text(
-                "Succesvol gecomprimeerde originelen worden vervangen. " +
-                "Doe eerst de 3-clip-test en controleer die in Final Cut."
+                "De gecomprimeerde clips worden actief, maar de originele bestanden blijven als herstelbackup staan. " +
+                "Verwijder die backups pas nadat je de library in Final Cut hebt gecontroleerd."
             )
         }
     }
@@ -272,8 +272,8 @@ struct ContentView: View {
                             .font(.headline)
 
                         Text(
-                            "Geslaagde clips worden vervangen. " +
-                            "De tijdelijke originelen worden daarna verwijderd."
+                            "Geslaagde clips worden vervangen, maar alle originelen blijven als verborgen herstelbackup staan. " +
+                            "Na controle in Final Cut kun je ze met één knop verwijderen."
                         )
                         .font(.caption)
                         .foregroundColor(.secondary)
