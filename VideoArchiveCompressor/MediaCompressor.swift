@@ -85,6 +85,15 @@ final class MediaCompressor {
             throw CompressionError.noVideo
         }
 
+        if preset == .extremeOriginalResolution &&
+            source.pathExtension.lowercased() == "mov" {
+            return try await compressExtremeMOV(
+                source: source,
+                keepBackup: keepBackup,
+                onProgress: onProgress
+            )
+        }
+
         let compatible = AVAssetExportSession.exportPresets(compatibleWith: asset)
         guard compatible.contains(preset.exportPresetName) else {
             throw CompressionError.unsupportedPreset
@@ -255,6 +264,325 @@ final class MediaCompressor {
 
         onProgress(1.0)
         return newBytes
+    }
+
+    private func compressExtremeMOV(
+        source: URL,
+        keepBackup: Bool,
+        onProgress: @escaping @Sendable (Double) -> Void
+    ) async throws -> Int64 {
+        let fm = FileManager.default
+        let originalValues = try source.resourceValues(
+            forKeys: [.fileSizeKey, .contentModificationDateKey]
+        )
+        let originalBytes = Int64(originalValues.fileSize ?? 0)
+
+        let encodedTemp = tempURL(
+            for: source,
+            marker: "VAC_EXTREME_ENCODE"
+        )
+        let fcpTemp = tempURL(
+            for: source,
+            marker: "VAC_EXTREME_FCP"
+        )
+        let backup = backupURL(for: source)
+
+        try? fm.removeItem(at: encodedTemp)
+        try? fm.removeItem(at: fcpTemp)
+
+        try await encodeExtremeHEVCVideo(
+            source: source,
+            destination: encodedTemp,
+            onProgress: { value in
+                onProgress(value * 0.92)
+            }
+        )
+
+        onProgress(0.93)
+
+        do {
+            try await remuxMOVForFinalCut(
+                original: source,
+                encodedVideoFile: encodedTemp,
+                destination: fcpTemp
+            )
+        } catch {
+            try? fm.removeItem(at: encodedTemp)
+            try? fm.removeItem(at: fcpTemp)
+            throw error
+        }
+
+        try? fm.removeItem(at: encodedTemp)
+        onProgress(0.98)
+
+        let newBytes = Int64(
+            (try fcpTemp.resourceValues(
+                forKeys: [.fileSizeKey]
+            )).fileSize ?? 0
+        )
+
+        guard newBytes > 256_000 else {
+            try? fm.removeItem(at: fcpTemp)
+            throw CompressionError.invalidOutput
+        }
+
+        guard originalBytes == 0 || newBytes < originalBytes else {
+            try? fm.removeItem(at: fcpTemp)
+            throw CompressionError.notSmaller
+        }
+
+        do {
+            try await verifyFinalCutCompatibility(
+                source: source,
+                output: fcpTemp
+            )
+        } catch {
+            try? fm.removeItem(at: fcpTemp)
+            throw error
+        }
+
+        if fm.fileExists(atPath: backup.path) {
+            try? fm.removeItem(at: fcpTemp)
+            throw CompressionError.replaceFailed(
+                "er bestaat al een .VAC_ORIGINAL-backup voor dit bestand"
+            )
+        }
+
+        do {
+            try fm.moveItem(at: source, to: backup)
+
+            do {
+                try fm.moveItem(at: fcpTemp, to: source)
+            } catch {
+                try? fm.moveItem(at: backup, to: source)
+                try? fm.removeItem(at: fcpTemp)
+                throw CompressionError.replaceFailed(
+                    error.localizedDescription
+                )
+            }
+
+            if let modificationDate = originalValues.contentModificationDate {
+                try? fm.setAttributes(
+                    [.modificationDate: modificationDate],
+                    ofItemAtPath: source.path
+                )
+            }
+
+            if !keepBackup {
+                try? fm.removeItem(at: backup)
+            }
+        } catch let error as CompressionError {
+            throw error
+        } catch {
+            try? fm.removeItem(at: fcpTemp)
+            throw CompressionError.replaceFailed(
+                error.localizedDescription
+            )
+        }
+
+        onProgress(1.0)
+        return newBytes
+    }
+
+    private func encodeExtremeHEVCVideo(
+        source: URL,
+        destination: URL,
+        onProgress: @escaping @Sendable (Double) -> Void
+    ) async throws {
+        let fm = FileManager.default
+        try? fm.removeItem(at: destination)
+
+        let asset = AVURLAsset(url: source)
+        let videoTracks = try await asset.loadTracks(
+            withMediaType: .video
+        )
+
+        guard let track = videoTracks.first else {
+            throw CompressionError.noVideo
+        }
+
+        let reader: AVAssetReader
+
+        do {
+            reader = try AVAssetReader(asset: asset)
+        } catch {
+            throw CompressionError.exportFailed(
+                error.localizedDescription
+            )
+        }
+
+        let readerOutput = AVAssetReaderTrackOutput(
+            track: track,
+            outputSettings: [
+                kCVPixelBufferPixelFormatTypeKey as String:
+                    Int(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
+            ]
+        )
+
+        readerOutput.alwaysCopiesSampleData = false
+
+        guard reader.canAdd(readerOutput) else {
+            throw CompressionError.exportFailed(
+                "videotrack kan niet worden gelezen"
+            )
+        }
+
+        reader.add(readerOutput)
+
+        let naturalSize = try await track.load(.naturalSize)
+        let transform = try await track.load(.preferredTransform)
+        let fps = try await track.load(.nominalFrameRate)
+        let duration = try await asset.load(.duration)
+
+        let width = max(16, Int(abs(naturalSize.width).rounded()))
+        let height = max(16, Int(abs(naturalSize.height).rounded()))
+        let pixels = width * height
+
+        // Aggressive archive bitrates. Resolution and frame timing stay intact.
+        // The reader converts 10-bit originals to efficient 8-bit 4:2:0,
+        // which is intentional for this archival use case.
+        let bitrate: Int
+
+        if pixels <= 1920 * 1080 {
+            bitrate = fps > 30 ? 4_500_000 : 3_500_000
+        } else if pixels <= 2560 * 1440 {
+            bitrate = fps > 30 ? 6_500_000 : 5_000_000
+        } else if pixels <= 3840 * 2160 {
+            bitrate = fps > 30 ? 10_000_000 : 8_000_000
+        } else {
+            bitrate = fps > 30 ? 15_000_000 : 12_000_000
+        }
+
+        let writer: AVAssetWriter
+
+        do {
+            writer = try AVAssetWriter(
+                outputURL: destination,
+                fileType: .mov
+            )
+        } catch {
+            throw CompressionError.exportFailed(
+                error.localizedDescription
+            )
+        }
+
+        let writerInput = AVAssetWriterInput(
+            mediaType: .video,
+            outputSettings: [
+                AVVideoCodecKey: AVVideoCodecType.hevc,
+                AVVideoWidthKey: width,
+                AVVideoHeightKey: height,
+                AVVideoCompressionPropertiesKey: [
+                    AVVideoAverageBitRateKey: bitrate,
+                    AVVideoExpectedSourceFrameRateKey:
+                        max(1, Int(fps.rounded())),
+                    AVVideoMaxKeyFrameIntervalKey:
+                        max(30, Int(max(fps, 25) * 2))
+                ]
+            ]
+        )
+
+        writerInput.transform = transform
+        writerInput.expectsMediaDataInRealTime = false
+
+        guard writer.canAdd(writerInput) else {
+            throw CompressionError.exportFailed(
+                "HEVC-writer ondersteunt deze videotrack niet"
+            )
+        }
+
+        writer.add(writerInput)
+
+        guard writer.startWriting() else {
+            throw CompressionError.exportFailed(
+                writer.error?.localizedDescription ??
+                "HEVC-writer kon niet starten"
+            )
+        }
+
+        guard reader.startReading() else {
+            writer.cancelWriting()
+            throw CompressionError.exportFailed(
+                reader.error?.localizedDescription ??
+                "videoreader kon niet starten"
+            )
+        }
+
+        writer.startSession(atSourceTime: .zero)
+
+        let totalSeconds = max(
+            0.001,
+            CMTimeGetSeconds(duration)
+        )
+
+        try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Void, Error>) in
+
+            let queue = DispatchQueue(
+                label: "nl.maarten.VideoArchiveCompressor.extremeHEVC"
+            )
+
+            writerInput.requestMediaDataWhenReady(on: queue) {
+                while writerInput.isReadyForMoreMediaData {
+                    if let sample = readerOutput.copyNextSampleBuffer() {
+                        if !writerInput.append(sample) {
+                            writerInput.markAsFinished()
+                            reader.cancelReading()
+                            writer.cancelWriting()
+
+                            continuation.resume(
+                                throwing: CompressionError.exportFailed(
+                                    writer.error?.localizedDescription ??
+                                    "HEVC-frame kon niet worden geschreven"
+                                )
+                            )
+                            return
+                        }
+
+                        let seconds = CMTimeGetSeconds(
+                            CMSampleBufferGetPresentationTimeStamp(sample)
+                        )
+
+                        if seconds.isFinite {
+                            onProgress(
+                                min(
+                                    0.99,
+                                    max(0, seconds / totalSeconds)
+                                )
+                            )
+                        }
+                    } else {
+                        writerInput.markAsFinished()
+
+                        if reader.status == .failed {
+                            writer.cancelWriting()
+                            continuation.resume(
+                                throwing: CompressionError.exportFailed(
+                                    reader.error?.localizedDescription ??
+                                    "videoreader is mislukt"
+                                )
+                            )
+                            return
+                        }
+
+                        writer.finishWriting {
+                            if writer.status == .completed {
+                                continuation.resume()
+                            } else {
+                                continuation.resume(
+                                    throwing: CompressionError.exportFailed(
+                                        writer.error?.localizedDescription ??
+                                        "HEVC-export kon niet worden afgerond"
+                                    )
+                                )
+                            }
+                        }
+
+                        return
+                    }
+                }
+            }
+        }
     }
 
     private func remuxMOVForFinalCut(
