@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import CoreMedia
 
 enum CompressionError: LocalizedError {
     case noVideo
@@ -7,20 +8,45 @@ enum CompressionError: LocalizedError {
     case unsupportedContainer
     case exportFailed(String)
     case invalidOutput
-    case durationMismatch
+    case durationMismatch(source: Double, output: Double)
+    case frameRateMismatch(source: Float, output: Float)
+    case audioTrackMismatch(source: Int, output: Int)
+    case audioChannelMismatch(track: Int, source: Int, output: Int)
     case notSmaller
     case replaceFailed(String)
 
     var errorDescription: String? {
         switch self {
-        case .noVideo: return "geen videotrack"
-        case .unsupportedPreset: return "preset niet ondersteund"
-        case .unsupportedContainer: return "container niet veilig vervangbaar"
-        case .exportFailed(let message): return message
-        case .invalidOutput: return "nieuwe video is ongeldig"
-        case .durationMismatch: return "duur wijkt af"
-        case .notSmaller: return "nieuwe video is niet kleiner"
-        case .replaceFailed(let message): return message
+        case .noVideo:
+            return "geen videotrack"
+        case .unsupportedPreset:
+            return "preset niet ondersteund"
+        case .unsupportedContainer:
+            return "container niet veilig vervangbaar"
+        case .exportFailed(let message):
+            return message
+        case .invalidOutput:
+            return "nieuwe video is ongeldig"
+        case .durationMismatch(let source, let output):
+            return String(
+                format: "duur wijkt af: bron %.3fs, nieuw %.3fs",
+                source,
+                output
+            )
+        case .frameRateMismatch(let source, let output):
+            return String(
+                format: "framerate wijkt af: bron %.3f fps, nieuw %.3f fps",
+                source,
+                output
+            )
+        case .audioTrackMismatch(let source, let output):
+            return "aantal audiotracks wijkt af: bron \(source), nieuw \(output)"
+        case .audioChannelMismatch(let track, let source, let output):
+            return "audiokanalen track \(track) wijken af: bron \(source), nieuw \(output)"
+        case .notSmaller:
+            return "nieuwe video is niet kleiner"
+        case .replaceFailed(let message):
+            return message
         }
     }
 }
@@ -41,25 +67,35 @@ final class MediaCompressor {
         let fm = FileManager.default
         let asset = AVURLAsset(url: source)
 
-        let tracks = try await asset.loadTracks(withMediaType: .video)
-        guard !tracks.isEmpty else { throw CompressionError.noVideo }
+        let sourceVideoTracks = try await asset.loadTracks(withMediaType: .video)
+        guard !sourceVideoTracks.isEmpty else {
+            throw CompressionError.noVideo
+        }
 
         let compatible = AVAssetExportSession.exportPresets(compatibleWith: asset)
         guard compatible.contains(preset.exportPresetName) else {
             throw CompressionError.unsupportedPreset
         }
 
-        guard let export = AVAssetExportSession(asset: asset, presetName: preset.exportPresetName) else {
+        guard let export = AVAssetExportSession(
+            asset: asset,
+            presetName: preset.exportPresetName
+        ) else {
             throw CompressionError.unsupportedPreset
         }
 
         activeExport = export
         defer { activeExport = nil }
 
-        let originalValues = try source.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        let originalValues = try source.resourceValues(
+            forKeys: [.fileSizeKey, .contentModificationDateKey]
+        )
         let originalBytes = Int64(originalValues.fileSize ?? 0)
 
-        let fileType = try chooseFileType(for: source, supported: export.supportedFileTypes)
+        let fileType = try chooseFileType(
+            for: source,
+            supported: export.supportedFileTypes
+        )
         let tmp = tempURL(for: source)
         let backup = backupURL(for: source)
 
@@ -68,6 +104,10 @@ final class MediaCompressor {
         export.outputURL = tmp
         export.outputFileType = fileType
         export.shouldOptimizeForNetworkUse = false
+
+        if #available(macOS 15.0, *) {
+            export.audioTrackGroupHandling = .preserveAlternateTracks
+        }
 
         let progressTask = Task {
             while !Task.isCancelled {
@@ -116,7 +156,15 @@ final class MediaCompressor {
             throw CompressionError.notSmaller
         }
 
-        try await verify(source: source, output: tmp)
+        do {
+            try await verifyFinalCutCompatibility(
+                source: source,
+                output: tmp
+            )
+        } catch {
+            try? fm.removeItem(at: tmp)
+            throw error
+        }
 
         try? fm.removeItem(at: backup)
 
@@ -128,7 +176,10 @@ final class MediaCompressor {
             } catch {
                 try? fm.moveItem(at: backup, to: source)
                 try? fm.removeItem(at: tmp)
-                throw CompressionError.replaceFailed(error.localizedDescription)
+
+                throw CompressionError.replaceFailed(
+                    error.localizedDescription
+                )
             }
 
             if let modificationDate = originalValues.contentModificationDate {
@@ -145,34 +196,107 @@ final class MediaCompressor {
             throw error
         } catch {
             try? fm.removeItem(at: tmp)
-            throw CompressionError.replaceFailed(error.localizedDescription)
+
+            throw CompressionError.replaceFailed(
+                error.localizedDescription
+            )
         }
 
         return newBytes
     }
 
-    private func verify(source: URL, output: URL) async throws {
+    private func verifyFinalCutCompatibility(
+        source: URL,
+        output: URL
+    ) async throws {
         let oldAsset = AVURLAsset(url: source)
         let newAsset = AVURLAsset(url: output)
 
-        let oldDuration = try await oldAsset.load(.duration)
-        let newDuration = try await newAsset.load(.duration)
-        let newTracks = try await newAsset.loadTracks(withMediaType: .video)
+        let oldVideoTracks = try await oldAsset.loadTracks(withMediaType: .video)
+        let newVideoTracks = try await newAsset.loadTracks(withMediaType: .video)
 
-        guard !newTracks.isEmpty else {
+        guard let oldVideo = oldVideoTracks.first,
+              let newVideo = newVideoTracks.first else {
             throw CompressionError.invalidOutput
         }
+
+        let oldDuration = try await oldAsset.load(.duration)
+        let newDuration = try await newAsset.load(.duration)
 
         let oldSeconds = CMTimeGetSeconds(oldDuration)
         let newSeconds = CMTimeGetSeconds(newDuration)
 
         if oldSeconds.isFinite && newSeconds.isFinite && oldSeconds > 0 {
-            let tolerance = max(0.75, oldSeconds * 0.005)
+            // FCP requires replacement media to be long enough to cover every
+            // referenced clip. Do not accept a meaningfully shorter file.
+            let tolerance = 0.005
 
-            guard abs(oldSeconds - newSeconds) <= tolerance else {
-                throw CompressionError.durationMismatch
+            guard newSeconds + tolerance >= oldSeconds else {
+                throw CompressionError.durationMismatch(
+                    source: oldSeconds,
+                    output: newSeconds
+                )
             }
         }
+
+        let oldFPS = try await oldVideo.load(.nominalFrameRate)
+        let newFPS = try await newVideo.load(.nominalFrameRate)
+
+        if oldFPS > 0 && newFPS > 0 {
+            guard abs(oldFPS - newFPS) < 0.01 else {
+                throw CompressionError.frameRateMismatch(
+                    source: oldFPS,
+                    output: newFPS
+                )
+            }
+        }
+
+        let oldAudio = try await oldAsset.loadTracks(withMediaType: .audio)
+        let newAudio = try await newAsset.loadTracks(withMediaType: .audio)
+
+        guard oldAudio.count == newAudio.count else {
+            throw CompressionError.audioTrackMismatch(
+                source: oldAudio.count,
+                output: newAudio.count
+            )
+        }
+
+        for index in oldAudio.indices {
+            let oldChannels = try await channelCount(for: oldAudio[index])
+            let newChannels = try await channelCount(for: newAudio[index])
+
+            if let oldChannels, let newChannels {
+                guard oldChannels == newChannels else {
+                    throw CompressionError.audioChannelMismatch(
+                        track: index + 1,
+                        source: oldChannels,
+                        output: newChannels
+                    )
+                }
+            }
+        }
+    }
+
+    private func channelCount(
+        for track: AVAssetTrack
+    ) async throws -> Int? {
+        let descriptions = try await track.load(.formatDescriptions)
+
+        for description in descriptions {
+            guard CMFormatDescriptionGetMediaType(description) == kCMMediaType_Audio else {
+                continue
+            }
+
+            guard let basic = CMAudioFormatDescriptionGetStreamBasicDescription(
+                description
+            ) else {
+                continue
+            }
+
+            return Int(basic.pointee.mChannelsPerFrame)
+        }
+
+        return nil
     }
 
     private func chooseFileType(
