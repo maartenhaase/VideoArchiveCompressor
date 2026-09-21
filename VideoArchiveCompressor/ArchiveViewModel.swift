@@ -257,12 +257,18 @@ final class ArchiveViewModel: ObservableObject {
             }.value
 
             let totalSaved = savedBytes + cacheBytes
+            let convertedCount = jobs.reduce(0) { count, job in
+                if case .done = job.state {
+                    return count + 1
+                }
+                return count
+            }
 
             extremeSummary = """
             Klaar.
 
             Ruimte bespaard: \(totalSaved.storageString)
-            Video's verwerkt: \(jobs.filter { if case .done = $0.state { return true }; return false }.count)
+            Video's verwerkt: \(convertedCount)
             Projecten verplaatst: \(organized.moved)
             Losse bestanden gesorteerd: \(loose.moved)
             Overgeslagen / handmatig controleren: \(organized.skipped + loose.skipped + unsupportedCount)
