@@ -1,0 +1,43 @@
+name: Build macOS app
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Build Release
+        run: |
+          xcodebuild \
+            -project VideoArchiveCompressor.xcodeproj \
+            -scheme VideoArchiveCompressor \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Zip app
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent \
+            "build/Build/Products/Release/Video Archive Compressor.app" \
+            "Video-Archive-Compressor-macOS.zip"
+
+      - name: Upload app
+        uses: actions/upload-artifact@v4
+        with:
+          name: Video-Archive-Compressor-macOS
+          path: Video-Archive-Compressor-macOS.zip
+          if-no-files-found: error
