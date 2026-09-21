@@ -1,41 +1,104 @@
 # Video Archive Compressor
 
-Native macOS-app voor het verkleinen van oude Final Cut Pro-media-archieven.
+Native macOS-app om oude videodrives en Final Cut Pro-archieven **kleiner én opgeruimd** te maken.
 
-## Doel
+## EXTREME ONE CLICK
 
-Deze app is bedoeld voor oude `.fcpbundle`-libraries en archiefschijven waar de originele camera-kwaliteit niet meer nodig is, maar waar je de projecten later nog wel wilt kunnen openen.
+Kies een hele externe harde schijf of hoofdmap en druk op **RUIM ALLES OP**.
 
-- native SwiftUI-interface
-- geen Python, Homebrew of FFmpeg
-- gebruikt AVFoundation van macOS
-- batchverwerking met zichtbare voortgang
-- scant binnen Final Cut libraries alleen `Original Media`
-- laat `Render Files`, `Transcoded Media` en `Analysis Files` met rust
-- testmodus voor 3 clips met verborgen backup van het origineel
-- nieuwe clip blijft op exact dezelfde locatie en met exact dezelfde bestandsnaam staan
+De app doet daarna automatisch:
 
-## Aanbevolen workflow
+1. Final Cut `Render Files`, `Transcoded Media` en `Analysis Files` verwijderen.
+2. Geschikte video's comprimeren naar HEVC.
+3. Bij MOV-camera-originals de originele resolutie behouden met een agressieve archiefbitrate.
+4. Originele audio en QuickTime-timecode bewaren voor Final Cut relinking.
+5. Projectmappen en FCP libraries herkennen.
+6. Projecten indelen op **jaar + soort**.
+7. Losse documenten, screenshots, foto's, audio, archieven en overige bestanden sorteren.
+8. Lege, achtergebleven mapjes opruimen.
 
-1. Sluit Final Cut Pro.
-2. Kies of sleep een `.fcpbundle`, map of harde schijf in de app.
-3. Kies **Tiny HD** voor maximaal 1080p HEVC.
-4. Klik **TEST 3 CLIPS**.
-5. Open daarna de library in Final Cut Pro en controleer de drie clips.
-6. Als alles goed werkt, start de hele batch.
+De eerste echte videoconversies vormen automatisch een veiligheidstest. Een clip wordt pas vervangen nadat framerate, duur, audiotracks/audiokanalen en timecode technisch zijn gecontroleerd.
 
-## Ondersteunde bestanden
+## Automatische mappenstructuur
 
-Voor veilige in-place vervanging worden voorlopig automatisch verwerkt:
+Voorbeeld:
 
+```text
+ARCHIEF_GESORTEERD/
+├── 2025/
+│   ├── Projecten/
+│   │   ├── Trouwfilms/
+│   │   ├── Bedrijfsfilms - Groot/
+│   │   ├── Bedrijfsfilms - Klein/
+│   │   ├── Persoonlijk/
+│   │   ├── Overig - Groot/
+│   │   └── Overig - Klein/
+│   ├── Documenten/
+│   │   ├── PDF/
+│   │   ├── Tekstdocumenten/
+│   │   ├── Spreadsheets/
+│   │   └── Presentaties/
+│   ├── Afbeeldingen/
+│   │   ├── Schermafbeeldingen/
+│   │   ├── Foto's/
+│   │   └── RAW/
+│   ├── Video/
+│   ├── Audio/
+│   ├── Creatief/
+│   ├── Archieven & ZIP/
+│   ├── Installatiebestanden/
+│   └── Overig/
+└── 2024/
+    └── ...
+```
+
+Bestanden met **schermafbeelding**, **screenshot** of **screen shot** in de bestandsnaam komen automatisch in `Afbeeldingen/Schermafbeeldingen`.
+
+## Projecten blijven intact
+
+De organizer haalt documenten, logo's of andere bestanden **niet uit herkende videoprojecten**. Een projectmap wordt als één geheel verplaatst.
+
+Een `.fcpbundle` blijft eveneens één bestand/package.
+
+Final Cut-libraries of projectmappen met extern gelinkte/alias-media worden uit voorzorg niet automatisch verplaatst.
+
+## Final Cut compatibiliteit
+
+Binnen een `.fcpbundle` verwerkt de compressor alleen `Original Media`.
+
+De app bewaart bij MOV-camera-originals:
+- bestandsnaam en pad tijdens compressie;
+- resolutie;
+- framerate;
+- oorspronkelijke audiotracks en kanaalindeling;
+- oorspronkelijke QuickTime timecode-track.
+
+Daardoor blijft de oorspronkelijke media-range beschikbaar voor Final Cut.
+
+## Ondersteunde video voor automatische vervanging
+
+Momenteel:
 - `.mov`
 - `.mp4`
 - `.m4v`
 
-MTS, M2TS, MXF, AVI en symlinks worden bewust overgeslagen.
+MTS, M2TS, MXF, AVI en externe/symlinked media worden gerapporteerd maar bewust niet destructief vervangen.
+
+## Handmatige FCP-modus
+
+Voor één belangrijke library kun je nog steeds:
+1. **TEST 3 CLIPS**
+2. de library openen in Final Cut;
+3. daarna **START HELE BATCH** gebruiken.
 
 ## Build
 
-De GitHub Actions-workflow bouwt bij iedere push automatisch een macOS Release-build en maakt daarvan een ZIP-artifact.
+De app is volledig native SwiftUI + AVFoundation.
 
-De GitHub-build is niet genotariseerd met een Apple Developer-certificaat. Bij de eerste keer openen kan macOS daarom vragen om via **rechtsklik → Open** toestemming te geven.
+Geen Python.  
+Geen Homebrew.  
+Geen FFmpeg.
+
+GitHub Actions bouwt bij iedere push automatisch de macOS-app en publiceert de nieuwste geslaagde build als GitHub Release.
+
+De build is niet genotariseerd met een betaald Apple Developer-certificaat. macOS kan daarom bij de eerste start vragen om **rechtsklik → Open**.
