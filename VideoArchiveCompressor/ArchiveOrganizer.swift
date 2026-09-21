@@ -237,16 +237,14 @@ enum ArchiveOrganizer {
 
         while let url = enumerator.nextObject() as? URL {
             if url.path.hasPrefix(archiveRoot.path + "/") {
-                if (try? url.resourceValues(forKeys: [.isDirectoryKey]))
-                    ?.isDirectory == true {
+                if (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
                     enumerator.skipDescendants()
                 }
                 continue
             }
 
             if isProtected(url) {
-                if (try? url.resourceValues(forKeys: [.isDirectoryKey]))
-                    ?.isDirectory == true {
+                if (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
                     enumerator.skipDescendants()
                 }
                 continue
@@ -749,8 +747,7 @@ enum ArchiveOrganizer {
             let depth = url.pathComponents.count - baseComponents
 
             if depth > maxDepth {
-                if (try? url.resourceValues(forKeys: [.isDirectoryKey]))
-                    ?.isDirectory == true {
+                if (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
                     enumerator.skipDescendants()
                 }
                 continue
@@ -830,8 +827,7 @@ enum ArchiveOrganizer {
         var folders: [URL] = []
 
         while let url = enumerator.nextObject() as? URL {
-            guard (try? url.resourceValues(forKeys: [.isDirectoryKey]))
-                ?.isDirectory == true else {
+            guard (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else {
                 continue
             }
 
