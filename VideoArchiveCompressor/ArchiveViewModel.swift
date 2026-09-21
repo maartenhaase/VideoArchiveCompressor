@@ -109,7 +109,9 @@ final class ArchiveViewModel: ObservableObject {
     }
 
     func startFullBatch() {
-        start(limit: nil, keepBackups: false)
+        // Safety-first: keep every original until the user has opened the
+        // library in Final Cut and explicitly deletes the backups.
+        start(limit: nil, keepBackups: true)
     }
 
     func stop() {
