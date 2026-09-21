@@ -85,6 +85,11 @@ final class MediaCompressor {
             throw CompressionError.noVideo
         }
 
+        if let firstTrack = sourceVideoTracks.first,
+           try await trackUsesHEVC(firstTrack) {
+            throw CompressionError.notSmaller
+        }
+
         if preset == .extremeOriginalResolution &&
             source.pathExtension.lowercased() == "mov" {
             return try await compressExtremeMOV(
@@ -904,6 +909,22 @@ final class MediaCompressor {
                 output: newTimecode.count
             )
         }
+    }
+
+    private func trackUsesHEVC(
+        _ track: AVAssetTrack
+    ) async throws -> Bool {
+        let descriptions = try await track.load(.formatDescriptions)
+
+        for description in descriptions {
+            let subtype = CMFormatDescriptionGetMediaSubType(description)
+
+            if subtype == kCMVideoCodecType_HEVC {
+                return true
+            }
+        }
+
+        return false
     }
 
     private func channelCount(
