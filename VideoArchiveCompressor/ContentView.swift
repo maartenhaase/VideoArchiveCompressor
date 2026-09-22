@@ -649,12 +649,13 @@ private struct OperationTile: View {
 
             Spacer(minLength: 4)
 
-            Button(buttonTitle, action: action)
-                .buttonStyle(
-                    prominent
-                        ? AnyButtonStyle(.borderedProminent)
-                        : AnyButtonStyle(.bordered)
-                )
+            if prominent {
+                Button(buttonTitle, action: action)
+                    .buttonStyle(.borderedProminent)
+            } else {
+                Button(buttonTitle, action: action)
+                    .buttonStyle(.bordered)
+            }
         }
         .padding(13)
         .frame(maxWidth: .infinity, minHeight: 165, alignment: .topLeading)
@@ -675,20 +676,6 @@ private struct OperationTile: View {
                     lineWidth: prominent ? 1.5 : 1
                 )
         )
-    }
-}
-
-private struct AnyButtonStyle: PrimitiveButtonStyle {
-    private let makeBodyClosure: (Configuration) -> AnyView
-
-    init<S: PrimitiveButtonStyle>(_ style: S) {
-        makeBodyClosure = { configuration in
-            AnyView(style.makeBody(configuration: configuration))
-        }
-    }
-
-    func makeBody(configuration: Configuration) -> some View {
-        makeBodyClosure(configuration)
     }
 }
 
