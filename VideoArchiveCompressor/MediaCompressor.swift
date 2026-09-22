@@ -231,9 +231,19 @@ final class MediaCompressor {
             throw CompressionError.noVideo
         }
 
-        if let firstTrack = sourceVideoTracks.first,
+        if preset == .extremeOriginalResolution,
+           let firstTrack = sourceVideoTracks.first,
            try await trackUsesHEVC(firstTrack) {
             throw CompressionError.notSmaller
+        }
+
+        if preset == .flash720 &&
+            source.pathExtension.lowercased() == "mov" {
+            return try await compressFlashMOV(
+                source: source,
+                keepBackup: keepBackup,
+                onProgress: onProgress
+            )
         }
 
         if preset == .extremeOriginalResolution &&
@@ -416,6 +426,532 @@ final class MediaCompressor {
 
         onProgress(1.0)
         return newBytes
+    }
+
+    private func compressFlashMOV(
+        source: URL,
+        keepBackup: Bool,
+        onProgress: @escaping @Sendable (Double) -> Void
+    ) async throws -> Int64 {
+        let fm = FileManager.default
+        let asset = AVURLAsset(url: source)
+
+        if let track = try await asset.loadTracks(
+            withMediaType: .video
+        ).first {
+            let sourceRate = try await track.load(.estimatedDataRate)
+
+            // Already tiny? Do not spend minutes re-encoding it.
+            if sourceRate > 0 && sourceRate <= 2_500_000 {
+                throw CompressionError.notSmaller
+            }
+        }
+
+        let originalValues = try source.resourceValues(
+            forKeys: [.fileSizeKey, .contentModificationDateKey]
+        )
+        let originalBytes = Int64(originalValues.fileSize ?? 0)
+
+        let encodedTemp = tempURL(
+            for: source,
+            marker: "VAC_FLASH720_ENCODE"
+        )
+        let fcpTemp = tempURL(
+            for: source,
+            marker: "VAC_FLASH720_FCP"
+        )
+        let backup = backupURL(for: source)
+
+        try? fm.removeItem(at: encodedTemp)
+        try? fm.removeItem(at: fcpTemp)
+
+        try await encodeFlash720H264Video(
+            source: source,
+            destination: encodedTemp,
+            onProgress: { value in
+                onProgress(value * 0.92)
+            }
+        )
+
+        onProgress(0.93)
+
+        do {
+            try await remuxMOVForFinalCut(
+                original: source,
+                encodedVideoFile: encodedTemp,
+                destination: fcpTemp
+            )
+        } catch {
+            try? fm.removeItem(at: encodedTemp)
+            try? fm.removeItem(at: fcpTemp)
+            throw error
+        }
+
+        try? fm.removeItem(at: encodedTemp)
+        onProgress(0.98)
+
+        let newBytes = Int64(
+            (try fcpTemp.resourceValues(
+                forKeys: [.fileSizeKey]
+            )).fileSize ?? 0
+        )
+
+        guard newBytes > 256_000 else {
+            try? fm.removeItem(at: fcpTemp)
+            throw CompressionError.invalidOutput
+        }
+
+        guard originalBytes == 0 || newBytes < originalBytes else {
+            try? fm.removeItem(at: fcpTemp)
+            throw CompressionError.notSmaller
+        }
+
+        do {
+            try await verifyFinalCutCompatibility(
+                source: source,
+                output: fcpTemp
+            )
+        } catch {
+            try? fm.removeItem(at: fcpTemp)
+            throw error
+        }
+
+        if fm.fileExists(atPath: backup.path) {
+            try? fm.removeItem(at: fcpTemp)
+            throw CompressionError.replaceFailed(
+                "er bestaat al een .VAC_ORIGINAL-backup voor dit bestand"
+            )
+        }
+
+        do {
+            try fm.moveItem(at: source, to: backup)
+
+            do {
+                try fm.copyItem(at: fcpTemp, to: source)
+                try? fm.removeItem(at: fcpTemp)
+            } catch {
+                try? fm.moveItem(at: backup, to: source)
+                try? fm.removeItem(at: fcpTemp)
+                throw CompressionError.replaceFailed(
+                    error.localizedDescription
+                )
+            }
+
+            if let modificationDate = originalValues.contentModificationDate {
+                try? fm.setAttributes(
+                    [.modificationDate: modificationDate],
+                    ofItemAtPath: source.path
+                )
+            }
+
+            if !keepBackup {
+                try? fm.removeItem(at: backup)
+            }
+        } catch let error as CompressionError {
+            throw error
+        } catch {
+            try? fm.removeItem(at: fcpTemp)
+            throw CompressionError.replaceFailed(
+                error.localizedDescription
+            )
+        }
+
+        onProgress(1.0)
+        return newBytes
+    }
+
+    private func encodeFlash720H264Video(
+        source: URL,
+        destination: URL,
+        onProgress: @escaping @Sendable (Double) -> Void
+    ) async throws {
+        let fm = FileManager.default
+        try? fm.removeItem(at: destination)
+
+        let asset = AVURLAsset(url: source)
+        let tracks = try await asset.loadTracks(withMediaType: .video)
+
+        guard let track = tracks.first else {
+            throw CompressionError.noVideo
+        }
+
+        let naturalSize = try await track.load(.naturalSize)
+        let transform = try await track.load(.preferredTransform)
+        let fps = try await track.load(.nominalFrameRate)
+        let duration = try await asset.load(.duration)
+
+        let sourceWidth = max(16, Int(abs(naturalSize.width).rounded()))
+        let sourceHeight = max(16, Int(abs(naturalSize.height).rounded()))
+
+        let scale = min(
+            1.0,
+            min(
+                1280.0 / Double(sourceWidth),
+                720.0 / Double(sourceHeight)
+            )
+        )
+
+        func even(_ value: Double) -> Int {
+            max(16, Int(value.rounded(.down)) / 2 * 2)
+        }
+
+        let width = even(Double(sourceWidth) * scale)
+        let height = even(Double(sourceHeight) * scale)
+
+        let reader: AVAssetReader
+
+        do {
+            reader = try AVAssetReader(asset: asset)
+        } catch {
+            throw CompressionError.exportFailed(
+                error.localizedDescription
+            )
+        }
+
+        let readerOutput = AVAssetReaderTrackOutput(
+            track: track,
+            outputSettings: [
+                kCVPixelBufferPixelFormatTypeKey as String:
+                    Int(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
+            ]
+        )
+
+        readerOutput.alwaysCopiesSampleData = false
+
+        guard reader.canAdd(readerOutput) else {
+            throw CompressionError.exportFailed(
+                "videotrack kan niet worden gelezen"
+            )
+        }
+
+        reader.add(readerOutput)
+
+        var pixelTransfer: VTPixelTransferSession?
+        let transferStatus = VTPixelTransferSessionCreate(
+            allocator: kCFAllocatorDefault,
+            pixelTransferSessionOut: &pixelTransfer
+        )
+
+        guard transferStatus == noErr,
+              let pixelTransfer else {
+            throw CompressionError.exportFailed(
+                "snelle 720p-scaler kon niet worden gestart (\(transferStatus))"
+            )
+        }
+
+        defer {
+            VTPixelTransferSessionInvalidate(pixelTransfer)
+        }
+
+        _ = VTSessionSetProperty(
+            pixelTransfer,
+            key: kVTPixelTransferPropertyKey_ScalingMode,
+            value: kVTScalingMode_Normal
+        )
+
+        var pool: CVPixelBufferPool?
+
+        let poolStatus = CVPixelBufferPoolCreate(
+            kCFAllocatorDefault,
+            nil,
+            [
+                kCVPixelBufferPixelFormatTypeKey as String:
+                    Int(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+                kCVPixelBufferWidthKey as String: width,
+                kCVPixelBufferHeightKey as String: height,
+                kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+            ] as CFDictionary,
+            &pool
+        )
+
+        guard poolStatus == kCVReturnSuccess,
+              let pool else {
+            throw CompressionError.exportFailed(
+                "720p pixelbuffer-pool kon niet worden gemaakt"
+            )
+        }
+
+        var session: VTCompressionSession?
+
+        let hardware: CFDictionary = [
+            kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder:
+                kCFBooleanTrue as Any
+        ] as CFDictionary
+
+        var status = VTCompressionSessionCreate(
+            allocator: kCFAllocatorDefault,
+            width: Int32(width),
+            height: Int32(height),
+            codecType: kCMVideoCodecType_H264,
+            encoderSpecification: hardware,
+            imageBufferAttributes: [
+                kCVPixelBufferPixelFormatTypeKey as String:
+                    Int(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+                kCVPixelBufferWidthKey as String: width,
+                kCVPixelBufferHeightKey as String: height,
+                kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+            ] as CFDictionary,
+            compressedDataAllocator: nil,
+            outputCallback: nil,
+            refcon: nil,
+            compressionSessionOut: &session
+        )
+
+        if status != noErr || session == nil {
+            let preferred: CFDictionary = [
+                kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder:
+                    kCFBooleanTrue as Any
+            ] as CFDictionary
+
+            status = VTCompressionSessionCreate(
+                allocator: kCFAllocatorDefault,
+                width: Int32(width),
+                height: Int32(height),
+                codecType: kCMVideoCodecType_H264,
+                encoderSpecification: preferred,
+                imageBufferAttributes: nil,
+                compressedDataAllocator: nil,
+                outputCallback: nil,
+                refcon: nil,
+                compressionSessionOut: &session
+            )
+        }
+
+        guard status == noErr,
+              let session else {
+            throw CompressionError.exportFailed(
+                "H.264 hardwareencoder kon niet worden gestart (\(status))"
+            )
+        }
+
+        defer {
+            VTCompressionSessionInvalidate(session)
+        }
+
+        func set(
+            _ key: CFString,
+            _ value: CFTypeRef
+        ) {
+            _ = VTSessionSetProperty(
+                session,
+                key: key,
+                value: value
+            )
+        }
+
+        let bitrate = fps > 30 ? 2_200_000 : 1_500_000
+
+        set(
+            kVTCompressionPropertyKey_AverageBitRate,
+            NSNumber(value: bitrate)
+        )
+        set(
+            kVTCompressionPropertyKey_RealTime,
+            kCFBooleanTrue
+        )
+        set(
+            kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
+            kCFBooleanTrue
+        )
+        set(
+            kVTCompressionPropertyKey_AllowFrameReordering,
+            kCFBooleanFalse
+        )
+        set(
+            kVTCompressionPropertyKey_MaxFrameDelayCount,
+            NSNumber(value: 0)
+        )
+        set(
+            kVTCompressionPropertyKey_ExpectedFrameRate,
+            NSNumber(value: max(1, fps))
+        )
+        set(
+            kVTCompressionPropertyKey_MaxKeyFrameInterval,
+            NSNumber(value: max(30, Int(max(fps, 25) * 2)))
+        )
+        set(
+            kVTCompressionPropertyKey_ProfileLevel,
+            kVTProfileLevel_H264_Main_AutoLevel
+        )
+
+        let prepare = VTCompressionSessionPrepareToEncodeFrames(
+            session
+        )
+
+        guard prepare == noErr else {
+            throw CompressionError.exportFailed(
+                "H.264 hardwareencoder kon niet worden voorbereid (\(prepare))"
+            )
+        }
+
+        guard reader.startReading() else {
+            throw CompressionError.exportFailed(
+                reader.error?.localizedDescription ??
+                "videoreader kon niet starten"
+            )
+        }
+
+        let sink = VTEncodedMovieSink(
+            destination: destination,
+            transform: transform
+        )
+
+        let errorBox = VTEncodeErrorBox()
+        let group = DispatchGroup()
+        let totalSeconds = max(
+            0.001,
+            CMTimeGetSeconds(duration)
+        )
+
+        while reader.status == .reading,
+              let sample = readerOutput.copyNextSampleBuffer() {
+            if let pendingError = errorBox.load() {
+                reader.cancelReading()
+                throw pendingError
+            }
+
+            guard let sourceBuffer = CMSampleBufferGetImageBuffer(
+                sample
+            ) else {
+                continue
+            }
+
+            var scaledBuffer: CVPixelBuffer?
+            let createResult = CVPixelBufferPoolCreatePixelBuffer(
+                kCFAllocatorDefault,
+                pool,
+                &scaledBuffer
+            )
+
+            guard createResult == kCVReturnSuccess,
+                  let scaledBuffer else {
+                reader.cancelReading()
+                throw CompressionError.exportFailed(
+                    "720p framebuffer kon niet worden gemaakt"
+                )
+            }
+
+            let scaleStatus = VTPixelTransferSessionTransferImage(
+                pixelTransfer,
+                from: sourceBuffer,
+                to: scaledBuffer
+            )
+
+            guard scaleStatus == noErr else {
+                reader.cancelReading()
+                throw CompressionError.exportFailed(
+                    "720p hardware-scaling mislukt (\(scaleStatus))"
+                )
+            }
+
+            let pts = CMSampleBufferGetPresentationTimeStamp(
+                sample
+            )
+            let frameDuration = CMSampleBufferGetDuration(
+                sample
+            )
+
+            group.enter()
+            var infoFlags = VTEncodeInfoFlags()
+
+            let encodeStatus = VTCompressionSessionEncodeFrame(
+                session,
+                imageBuffer: scaledBuffer,
+                presentationTimeStamp: pts,
+                duration: frameDuration.isValid
+                    ? frameDuration
+                    : .invalid,
+                frameProperties: nil,
+                infoFlagsOut: &infoFlags
+            ) {
+                status,
+                flags,
+                encodedSample in
+
+                defer {
+                    group.leave()
+                }
+
+                guard status == noErr else {
+                    errorBox.store(
+                        CompressionError.exportFailed(
+                            "H.264 encode-fout \(status)"
+                        )
+                    )
+                    return
+                }
+
+                if flags.contains(.frameDropped) {
+                    errorBox.store(
+                        CompressionError.exportFailed(
+                            "hardwareencoder heeft een frame laten vallen"
+                        )
+                    )
+                    return
+                }
+
+                guard let encodedSample else {
+                    errorBox.store(
+                        CompressionError.exportFailed(
+                            "hardwareencoder gaf geen H.264-frame terug"
+                        )
+                    )
+                    return
+                }
+
+                do {
+                    try sink.append(encodedSample)
+                } catch {
+                    errorBox.store(error)
+                }
+            }
+
+            if encodeStatus != noErr {
+                group.leave()
+                reader.cancelReading()
+                throw CompressionError.exportFailed(
+                    "hardwareencoder accepteerde frame niet (\(encodeStatus))"
+                )
+            }
+
+            let seconds = CMTimeGetSeconds(pts)
+
+            if seconds.isFinite {
+                onProgress(
+                    min(
+                        0.995,
+                        max(0, seconds / totalSeconds)
+                    )
+                )
+            }
+        }
+
+        if reader.status == .failed {
+            throw CompressionError.exportFailed(
+                reader.error?.localizedDescription ??
+                "videoreader is mislukt"
+            )
+        }
+
+        let complete = VTCompressionSessionCompleteFrames(
+            session,
+            untilPresentationTimeStamp: .invalid
+        )
+
+        guard complete == noErr else {
+            throw CompressionError.exportFailed(
+                "hardwareencoder kon niet afronden (\(complete))"
+            )
+        }
+
+        group.wait()
+
+        if let pendingError = errorBox.load() {
+            throw pendingError
+        }
+
+        try await sink.finish()
+        onProgress(1.0)
     }
 
     private func compressExtremeMOV(
