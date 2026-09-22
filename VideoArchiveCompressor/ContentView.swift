@@ -288,9 +288,9 @@ struct ContentView: View {
                 HStack(spacing: 12) {
                     OperationTile(
                         icon: "bolt.fill",
-                        title: "NITRO VIDEO",
-                        subtitle: "Alleen video's. Zelfde resolutie, hardware-HEVC, agressieve bitrate en interne SSD als tijdelijke werkruimte.",
-                        buttonTitle: "COMPRESS VIDEO'S",
+                        title: "NITRO MAX",
+                        subtitle: "Alleen video's. Directe VideoToolbox hardware-HEVC, speed-priority, agressieve bitrate en interne SSD als tijdelijke werkruimte.",
+                        buttonTitle: "START NITRO MAX",
                         prominent: true
                     ) {
                         showNitroConfirm = true
@@ -705,7 +705,7 @@ private struct PresetTile: View {
                     .multilineTextAlignment(.leading)
 
                 if preset == .extremeOriginalResolution {
-                    Text("NITRO / SNELST")
+                    Text("NITRO MAX / SNELST")
                         .font(.caption2.weight(.bold))
                         .foregroundColor(.accentColor)
                 }
