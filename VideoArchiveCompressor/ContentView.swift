@@ -4,11 +4,9 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @EnvironmentObject private var model: ArchiveViewModel
     @State private var isTargeted = false
-    @State private var showFullBatchConfirm = false
-    @State private var showExtremeConfirm = false
+    @State private var showFlashConfirm = false
     @State private var showNitroConfirm = false
     @State private var showOrganizeConfirm = false
-    @State private var showPhotoConfirm = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -19,8 +17,6 @@ struct ContentView: View {
                 VStack(spacing: 18) {
                     sourceCard
                     operationsCard
-                    presetCard
-                    actionCard
                     queueCard
                 }
                 .padding(22)
@@ -41,18 +37,33 @@ struct ContentView: View {
             Text(model.lastError ?? "")
         }
         .confirmationDialog(
-            "NITRO video-compressie starten?",
+            "FLASH 720p starten?",
+            isPresented: $showFlashConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Start FLASH 720p", role: .destructive) {
+                model.startFlash720VideoOnly()
+            }
+            Button("Annuleer", role: .cancel) {}
+        } message: {
+            Text(
+                "Allersnelste archiefmodus: hardware H.264, maximaal 1280×720 en agressieve bitrate. " +
+                "Framerate, audio-indeling en timecode worden bewaakt voor Final Cut."
+            )
+        }
+        .confirmationDialog(
+            "NITRO MAX starten?",
             isPresented: $showNitroConfirm,
             titleVisibility: .visible
         ) {
-            Button("Start NITRO", role: .destructive) {
+            Button("Start NITRO MAX", role: .destructive) {
                 model.startNitroVideoOnly()
             }
             Button("Annuleer", role: .cancel) {}
         } message: {
             Text(
-                "Video's worden agressief naar hardware-HEVC gecomprimeerd met behoud van resolutie. " +
-                "De eerste clips worden automatisch als veiligheidstest gecontroleerd op Final Cut-compatibiliteit."
+                "Behoudt de oorspronkelijke resolutie en gebruikt directe VideoToolbox HEVC-hardwarecompressie. " +
+                "Kleiner met betere kwaliteit, maar duidelijk langzamer dan FLASH 720p."
             )
         }
         .confirmationDialog(
@@ -66,57 +77,7 @@ struct ContentView: View {
             Button("Annuleer", role: .cancel) {}
         } message: {
             Text(
-                "Projectmappen worden per jaar en type geordend, losse documenten/foto's/audio worden gesorteerd " +
-                "en opnieuw maakbare Final Cut render/proxy/analysebestanden worden verwijderd."
-            )
-        }
-        .confirmationDialog(
-            "Foto's snel comprimeren?",
-            isPresented: $showPhotoConfirm,
-            titleVisibility: .visible
-        ) {
-            Button("Start FOTO TURBO", role: .destructive) {
-                model.startPhotoCompressionOnly()
-            }
-            Button("Annuleer", role: .cancel) {}
-        } message: {
-            Text(
-                "JPEG- en HEIC-foto's worden parallel opnieuw gecomprimeerd. De pixelresolutie blijft gelijk; " +
-                "foto's die nauwelijks kleiner worden blijven onaangeraakt."
-            )
-        }
-        .confirmationDialog(
-            "EXTREME ONE CLICK starten?",
-            isPresented: $showExtremeConfirm,
-            titleVisibility: .visible
-        ) {
-            Button("JA — ruim deze schijf op", role: .destructive) {
-                model.startExtremeOneClick()
-            }
-
-            Button("Annuleer", role: .cancel) {}
-        } message: {
-            Text(
-                "De app verwijdert opnieuw maakbare Final Cut render/proxy/analysebestanden, " +
-                "comprimeert geschikte video's agressief met behoud van resolutie, " +
-                "controleert eerst automatisch enkele FCP-clips en ordent daarna projecten en losse bestanden in ARCHIEF_GESORTEERD. " +
-                "Bestanden die niet veilig verwerkt kunnen worden blijven staan."
-            )
-        }
-        .confirmationDialog(
-            "Hele batch starten?",
-            isPresented: $showFullBatchConfirm,
-            titleVisibility: .visible
-        ) {
-            Button("Start hele batch", role: .destructive) {
-                model.startFullBatch()
-            }
-
-            Button("Annuleer", role: .cancel) {}
-        } message: {
-            Text(
-                "De gecomprimeerde clips worden actief, maar de originele bestanden blijven als herstelbackup staan. " +
-                "Verwijder die backups pas nadat je de library in Final Cut hebt gecontroleerd."
+                "Geen video-encode. Final Cut cache wordt verwijderd en projecten/documenten/screenshots/audio worden op jaar en type geordend."
             )
         }
     }
@@ -287,11 +248,26 @@ struct ContentView: View {
             VStack(spacing: 14) {
                 HStack(spacing: 12) {
                     OperationTile(
-                        icon: "bolt.fill",
-                        title: "NITRO MAX",
-                        subtitle: "Alleen video's. Directe VideoToolbox hardware-HEVC, speed-priority, agressieve bitrate en interne SSD als tijdelijke werkruimte.",
-                        buttonTitle: "START NITRO MAX",
+                        icon: "hare.fill",
+                        title: "1. FLASH 720p",
+                        subtitle: "ALLERSNELST. Hardware H.264, maximaal 1280×720 en ±1,5–2,2 Mbit/s. Beste keuze als snelheid belangrijker is dan 4K/1080p bewaren.",
+                        buttonTitle: "START FLASH",
                         prominent: true
+                    ) {
+                        showFlashConfirm = true
+                    }
+                    .disabled(
+                        model.sourceURL == nil ||
+                        model.isRunning ||
+                        model.isScanning ||
+                        model.finalCutIsRunning
+                    )
+
+                    OperationTile(
+                        icon: "bolt.fill",
+                        title: "2. NITRO MAX",
+                        subtitle: "Behoudt originele resolutie. Directe hardware-HEVC met agressieve bitrate. Mooier, maar trager dan FLASH.",
+                        buttonTitle: "START NITRO"
                     ) {
                         showNitroConfirm = true
                     }
@@ -304,52 +280,11 @@ struct ContentView: View {
 
                     OperationTile(
                         icon: "folder.badge.gearshape",
-                        title: "OPRUIMEN",
-                        subtitle: "Geen video-encode. Projecten per jaar/type, documenten/screenshots/audio sorteren en FCP-cache verwijderen.",
+                        title: "3. OPRUIMEN",
+                        subtitle: "Geen video-encode. Verwijdert alle hermaakbare FCP-cache en sorteert projecten en losse bestanden op jaar/type.",
                         buttonTitle: "RUIM & SORTEER"
                     ) {
                         showOrganizeConfirm = true
-                    }
-                    .disabled(
-                        model.sourceURL == nil ||
-                        model.isRunning ||
-                        model.isScanning ||
-                        model.finalCutIsRunning
-                    )
-
-                    OperationTile(
-                        icon: "photo.stack.fill",
-                        title: "FOTO TURBO",
-                        subtitle: "JPEG/HEIC parallel kleiner maken. Zelfde pixelresolutie; vooral bedoeld voor grote losse fotoarchieven.",
-                        buttonTitle: "COMPRESS FOTO'S"
-                    ) {
-                        showPhotoConfirm = true
-                    }
-                    .disabled(
-                        model.sourceURL == nil ||
-                        model.isRunning ||
-                        model.isScanning
-                    )
-                }
-
-                Divider()
-
-                HStack {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Alles liever automatisch achter elkaar?")
-                            .font(.subheadline.weight(.semibold))
-
-                        Text(
-                            "De bestaande One Click-modus combineert video-compressie + opruimen/sorteren."
-                        )
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    }
-
-                    Spacer()
-
-                    Button("ALLES IN ÉÉN") {
-                        showExtremeConfirm = true
                     }
                     .disabled(
                         model.sourceURL == nil ||
@@ -393,19 +328,11 @@ struct ContentView: View {
                         .foregroundColor(.green)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                } else if let summary = model.extremeSummary {
-                    Divider()
-
-                    Label(summary, systemImage: "checkmark.circle.fill")
-                        .font(.subheadline)
-                        .foregroundColor(.green)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
                 Label(
-                    "Snelheidswinst: NITRO encodeert via Apple's hardware-encoder en schrijft tijdelijke videodata naar de interne Mac-schijf in plaats van tegelijk te lezen én schrijven op dezelfde externe HDD.",
-                    systemImage: "speedometer"
+                    "Zwart-wit levert verrassend weinig op: H.264/HEVC bewaren kleur al sterk gesubsampled. Resolutie verlagen bespaart véél meer data en rekentijd.",
+                    systemImage: "info.circle"
                 )
                 .font(.caption)
                 .foregroundColor(.secondary)
@@ -414,8 +341,8 @@ struct ContentView: View {
             .padding(12)
         } label: {
             Label(
-                "Snelle functies",
-                systemImage: "bolt.horizontal.circle.fill"
+                "Kies één van 3 modi",
+                systemImage: "speedometer"
             )
         }
     }
