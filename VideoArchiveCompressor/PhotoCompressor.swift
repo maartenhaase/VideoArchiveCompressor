@@ -89,8 +89,7 @@ enum PhotoCompressor {
         let fm = FileManager.default
 
         let oldBytes = Int64(
-            (try? url.resourceValues(forKeys: [.fileSizeKey]))
-                ?.fileSize ?? 0
+            (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
         )
 
         guard oldBytes > 200_000 else {
@@ -175,8 +174,7 @@ enum PhotoCompressor {
         }
 
         let newBytes = Int64(
-            (try? temp.resourceValues(forKeys: [.fileSizeKey]))
-                ?.fileSize ?? 0
+            (try? temp.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
         )
 
         // Only replace if it actually makes a meaningful difference.
