@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import CoreMedia
+import VideoToolbox
 
 enum CompressionError: LocalizedError {
     case noVideo
@@ -237,7 +238,8 @@ final class MediaCompressor {
             try fm.moveItem(at: source, to: backup)
 
             do {
-                try fm.moveItem(at: finalTemp, to: source)
+                try fm.copyItem(at: finalTemp, to: source)
+                try? fm.removeItem(at: finalTemp)
             } catch {
                 try? fm.moveItem(at: backup, to: source)
                 try? fm.removeItem(at: finalTemp)
@@ -477,12 +479,24 @@ final class MediaCompressor {
                 AVVideoCodecKey: AVVideoCodecType.hevc,
                 AVVideoWidthKey: width,
                 AVVideoHeightKey: height,
+
+                // Prefer Apple's hardware media engine whenever available.
+                AVVideoEncoderSpecificationKey: [
+                    kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder as String: true
+                ],
+
                 AVVideoCompressionPropertiesKey: [
                     AVVideoAverageBitRateKey: bitrate,
                     AVVideoExpectedSourceFrameRateKey:
                         max(1, Int(fps.rounded())),
                     AVVideoMaxKeyFrameIntervalKey:
-                        max(30, Int(max(fps, 25) * 2))
+                        max(30, Int(max(fps, 25) * 2)),
+                    AVVideoAllowFrameReorderingKey: false,
+
+                    // NITRO: tell VideoToolbox that throughput matters more
+                    // than squeezing the final few percent of quality.
+                    kVTCompressionPropertyKey_RealTime as String: true,
+                    kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality as String: true
                 ]
             ]
         )
@@ -979,10 +993,24 @@ final class MediaCompressor {
         for source: URL,
         marker: String
     ) -> URL {
-        source
-            .deletingLastPathComponent()
+        // Deliberately use the Mac's internal temporary storage instead of
+        // writing the temporary encode beside the source. With mechanical
+        // archive HDDs this prevents simultaneous read/write head seeking,
+        // which can otherwise dominate total encoding time.
+        let scratch = FileManager.default.temporaryDirectory
             .appendingPathComponent(
-                ".\(source.deletingPathExtension().lastPathComponent).\(marker)_\(UUID().uuidString)"
+                "VideoArchiveCompressorScratch",
+                isDirectory: true
+            )
+
+        try? FileManager.default.createDirectory(
+            at: scratch,
+            withIntermediateDirectories: true
+        )
+
+        return scratch
+            .appendingPathComponent(
+                "\(UUID().uuidString)_\(marker)_\(source.deletingPathExtension().lastPathComponent)"
             )
             .appendingPathExtension(source.pathExtension)
     }
