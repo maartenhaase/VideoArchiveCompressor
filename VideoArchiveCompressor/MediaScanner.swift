@@ -31,13 +31,15 @@ enum MediaScanner {
 
             if values?.isDirectory == true {
                 let name = url.lastPathComponent.lowercased()
+                let ext = url.pathExtension.lowercased()
 
-                if [
-                    "render files",
-                    "transcoded media",
-                    "analysis files",
-                    ArchiveOrganizer.archiveFolderName.lowercased()
-                ].contains(name) {
+                if ext == "fcpcache" ||
+                    [
+                        "render files",
+                        "transcoded media",
+                        "analysis files",
+                        ArchiveOrganizer.archiveFolderName.lowercased()
+                    ].contains(name) {
                     enumerator.skipDescendants()
                     continue
                 }
