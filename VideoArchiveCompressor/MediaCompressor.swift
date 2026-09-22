@@ -279,6 +279,29 @@ final class MediaCompressor {
         onProgress: @escaping @Sendable (Double) -> Void
     ) async throws -> Int64 {
         let fm = FileManager.default
+
+        // Do not waste hours re-encoding material that is already close to
+        // our aggressive archive bitrate.
+        let sourceAsset = AVURLAsset(url: source)
+        if let sourceTrack = try await sourceAsset
+            .loadTracks(withMediaType: .video)
+            .first {
+            let size = try await sourceTrack.load(.naturalSize)
+            let fps = try await sourceTrack.load(.nominalFrameRate)
+            let sourceRate = try await sourceTrack.load(.estimatedDataRate)
+
+            let targetRate = nitroTargetBitrate(
+                width: max(16, Int(abs(size.width).rounded())),
+                height: max(16, Int(abs(size.height).rounded())),
+                fps: fps
+            )
+
+            if sourceRate > 0 &&
+                Double(sourceRate) <= Double(targetRate) * 1.20 {
+                throw CompressionError.notSmaller
+            }
+        }
+
         let originalValues = try source.resourceValues(
             forKeys: [.fileSizeKey, .contentModificationDateKey]
         )
@@ -443,22 +466,14 @@ final class MediaCompressor {
 
         let width = max(16, Int(abs(naturalSize.width).rounded()))
         let height = max(16, Int(abs(naturalSize.height).rounded()))
-        let pixels = width * height
-
-        // Aggressive archive bitrates. Resolution and frame timing stay intact.
-        // The reader converts 10-bit originals to efficient 8-bit 4:2:0,
-        // which is intentional for this archival use case.
-        let bitrate: Int
-
-        if pixels <= 1920 * 1080 {
-            bitrate = fps > 30 ? 4_500_000 : 3_500_000
-        } else if pixels <= 2560 * 1440 {
-            bitrate = fps > 30 ? 6_500_000 : 5_000_000
-        } else if pixels <= 3840 * 2160 {
-            bitrate = fps > 30 ? 10_000_000 : 8_000_000
-        } else {
-            bitrate = fps > 30 ? 15_000_000 : 12_000_000
-        }
+        // NITRO archive bitrates: intentionally aggressive. Resolution and
+        // timing stay intact, but 10-bit/high-bitrate camera originals become
+        // compact 8-bit 4:2:0 HEVC archive copies.
+        let bitrate = nitroTargetBitrate(
+            width: width,
+            height: height,
+            fps: fps
+        )
 
         let writer: AVAssetWriter
 
@@ -601,6 +616,25 @@ final class MediaCompressor {
                     }
                 }
             }
+        }
+    }
+
+    private func nitroTargetBitrate(
+        width: Int,
+        height: Int,
+        fps: Float
+    ) -> Int {
+        let pixels = width * height
+        let highFrameRate = fps > 30
+
+        if pixels <= 1920 * 1080 {
+            return highFrameRate ? 3_500_000 : 2_500_000
+        } else if pixels <= 2560 * 1440 {
+            return highFrameRate ? 5_000_000 : 4_000_000
+        } else if pixels <= 3840 * 2160 {
+            return highFrameRate ? 8_000_000 : 6_000_000
+        } else {
+            return highFrameRate ? 12_000_000 : 9_000_000
         }
     }
 
