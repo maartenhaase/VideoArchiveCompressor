@@ -11,7 +11,7 @@ enum ArchivePreset: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .extremeOriginalResolution: return "Extreme • resolutie behouden"
+        case .extremeOriginalResolution: return "NITRO • resolutie behouden"
         case .tinyHD: return "Tiny HD"
         case .compact4K: return "Compact 4K"
         case .preserveResolution: return "Resolutie behouden"
@@ -21,7 +21,7 @@ enum ArchivePreset: String, CaseIterable, Identifiable {
     var subtitle: String {
         switch self {
         case .extremeOriginalResolution:
-            return "Zelfde resolutie • HEVC • agressieve bitrate • snel archief"
+            return "Zelfde resolutie • hardware-HEVC • speed priority • agressieve bitrate"
         case .tinyHD:
             return "Max. 1080p HEVC • kleinste archief"
         case .compact4K:
