@@ -1,5 +1,10 @@
 # Video Archive Compressor
 
+## NITRO MAX
+
+De snelste videomodus gebruikt nu rechtstreeks Apple's **VideoToolbox `VTCompressionSession`** in plaats van AVAssetWriter de encoder te laten kiezen. Hardware-HEVC wordt eerst verplicht aangevraagd, speed-priority en realtime encoding staan aan, frame-reordering staat uit en tijdelijke encode-data gaat naar de interne Mac-schijf. Daarna worden originele audio en QuickTime-timecode teruggezet voor Final Cut-compatibiliteit.
+
+
 Native macOS-app om oude videodrives en Final Cut Pro-archieven **kleiner én opgeruimd** te maken.
 
 ## EXTREME ONE CLICK
