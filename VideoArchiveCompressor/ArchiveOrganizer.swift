@@ -44,7 +44,11 @@ enum ArchiveOrganizer {
     private static let generatedFinalCutFolderNames: Set<String> = [
         "render files",
         "transcoded media",
-        "analysis files"
+        "analysis files",
+        "thumbnail media",
+        "peaks data",
+        "optical flow",
+        "optical flow media"
     ]
 
     private static let videoExtensions: Set<String> = [
@@ -244,11 +248,14 @@ enum ArchiveOrganizer {
             let isModernLibrary =
                 lowerPath.contains(".fcpbundle/")
 
+            let isFinalCutCache =
+                lowerPath.contains(".fcpcache/")
+
             let isLegacyFinalCut =
                 lowerPath.contains("/final cut projects/") ||
                 lowerPath.contains("/final cut events/")
 
-            if (isModernLibrary || isLegacyFinalCut) &&
+            if (isModernLibrary || isFinalCutCache || isLegacyFinalCut) &&
                 generatedFinalCutFolderNames.contains(name) {
                 reclaimed += folderSizeIncludingHidden(url)
                 try? fm.removeItem(at: url)
@@ -562,6 +569,8 @@ enum ArchiveOrganizer {
             return creative(base, "InDesign")
         case "fcpxml":
             return creative(base, "Final Cut XML")
+        case "fcproject", "fcpproject", "fcpevent":
+            return creative(base, "Final Cut Legacy")
         case "prproj":
             return creative(base, "Premiere")
         case "aep", "aepx":
