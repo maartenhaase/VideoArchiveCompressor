@@ -267,17 +267,17 @@ final class ArchiveViewModel: ObservableObject {
         utilityProgress = 0
 
         Task {
+            statusText = "OPRUIMEN • alle FCP-projectcache verwijderen…"
+
+            let cacheBytes = await Task.detached(priority: .userInitiated) {
+                ArchiveOrganizer.purgeGeneratedFinalCutMedia(in: root)
+            }.value
+
+            utilityProgress = 0.25
             statusText = "OPRUIMEN • projecten herkennen…"
 
             let projects = await Task.detached(priority: .userInitiated) {
                 ArchiveOrganizer.discoverProjects(in: root)
-            }.value
-
-            utilityProgress = 0.25
-            statusText = "OPRUIMEN • FCP-cache verwijderen…"
-
-            let cacheBytes = await Task.detached(priority: .userInitiated) {
-                ArchiveOrganizer.purgeGeneratedFinalCutMedia(in: root)
             }.value
 
             utilityProgress = 0.5
@@ -441,16 +441,16 @@ final class ArchiveViewModel: ObservableObject {
         preset = .extremeOriginalResolution
 
         Task {
-            statusText = "Stap 1/5 • Projecten herkennen…"
-
-            let projects = await Task.detached(priority: .userInitiated) {
-                ArchiveOrganizer.discoverProjects(in: root)
-            }.value
-
-            statusText = "Stap 2/5 • FCP render/proxy/cache opruimen…"
+            statusText = "Stap 1/5 • Alle FCP-projectcache opruimen…"
 
             let cacheBytes = await Task.detached(priority: .userInitiated) {
                 ArchiveOrganizer.purgeGeneratedFinalCutMedia(in: root)
+            }.value
+
+            statusText = "Stap 2/5 • Projecten herkennen…"
+
+            let projects = await Task.detached(priority: .userInitiated) {
+                ArchiveOrganizer.discoverProjects(in: root)
             }.value
 
             statusText = "Stap 3/5 • Video's scannen…"
