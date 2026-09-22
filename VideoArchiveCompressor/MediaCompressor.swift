@@ -65,6 +65,151 @@ private struct PassthroughPair {
     let label: String
 }
 
+
+private final class VTEncodeErrorBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedError: Error?
+
+    func store(_ error: Error) {
+        lock.lock()
+        if storedError == nil {
+            storedError = error
+        }
+        lock.unlock()
+    }
+
+    func load() -> Error? {
+        lock.lock()
+        let value = storedError
+        lock.unlock()
+        return value
+    }
+}
+
+private final class VTEncodedMovieSink: @unchecked Sendable {
+    private let destination: URL
+    private let transform: CGAffineTransform
+    private let queue = DispatchQueue(
+        label: "nl.maarten.VideoArchiveCompressor.vtEncodedSink"
+    )
+
+    private var writer: AVAssetWriter?
+    private var input: AVAssetWriterInput?
+
+    init(
+        destination: URL,
+        transform: CGAffineTransform
+    ) {
+        self.destination = destination
+        self.transform = transform
+    }
+
+    func append(_ sampleBuffer: CMSampleBuffer) throws {
+        try queue.sync {
+            if writer == nil {
+                guard let format = CMSampleBufferGetFormatDescription(
+                    sampleBuffer
+                ) else {
+                    throw CompressionError.exportFailed(
+                        "VideoToolbox gaf geen HEVC-formatbeschrijving"
+                    )
+                }
+
+                let newWriter = try AVAssetWriter(
+                    outputURL: destination,
+                    fileType: .mov
+                )
+
+                let newInput = AVAssetWriterInput(
+                    mediaType: .video,
+                    outputSettings: nil,
+                    sourceFormatHint: format
+                )
+
+                newInput.transform = transform
+                newInput.expectsMediaDataInRealTime = false
+
+                guard newWriter.canAdd(newInput) else {
+                    throw CompressionError.exportFailed(
+                        "HEVC-samples kunnen niet naar MOV worden geschreven"
+                    )
+                }
+
+                newWriter.add(newInput)
+
+                guard newWriter.startWriting() else {
+                    throw CompressionError.exportFailed(
+                        newWriter.error?.localizedDescription ??
+                        "MOV-writer kon niet starten"
+                    )
+                }
+
+                newWriter.startSession(atSourceTime: .zero)
+
+                writer = newWriter
+                input = newInput
+            }
+
+            guard let writer,
+                  let input else {
+                throw CompressionError.exportFailed(
+                    "MOV-writer is niet geïnitialiseerd"
+                )
+            }
+
+            while !input.isReadyForMoreMediaData &&
+                    writer.status == .writing {
+                Thread.sleep(forTimeInterval: 0.0005)
+            }
+
+            guard writer.status == .writing else {
+                throw CompressionError.exportFailed(
+                    writer.error?.localizedDescription ??
+                    "MOV-writer is gestopt"
+                )
+            }
+
+            guard input.append(sampleBuffer) else {
+                throw CompressionError.exportFailed(
+                    writer.error?.localizedDescription ??
+                    "HEVC-sample kon niet worden geschreven"
+                )
+            }
+        }
+    }
+
+    func finish() async throws {
+        let pair: (AVAssetWriter, AVAssetWriterInput) = try queue.sync {
+            guard let writer,
+                  let input else {
+                throw CompressionError.exportFailed(
+                    "VideoToolbox heeft geen videoframes opgeleverd"
+                )
+            }
+
+            input.markAsFinished()
+            return (writer, input)
+        }
+
+        try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Void, Error>) in
+
+            pair.0.finishWriting {
+                if pair.0.status == .completed {
+                    continuation.resume()
+                } else {
+                    continuation.resume(
+                        throwing: CompressionError.exportFailed(
+                            pair.0.error?.localizedDescription ??
+                            "MOV kon niet worden afgerond"
+                        )
+                    )
+                }
+            }
+        }
+    }
+}
+
 final class MediaCompressor {
     private(set) var activeExport: AVAssetExportSession?
 
@@ -431,6 +576,26 @@ final class MediaCompressor {
             throw CompressionError.noVideo
         }
 
+        let naturalSize = try await track.load(.naturalSize)
+        let transform = try await track.load(.preferredTransform)
+        let fps = try await track.load(.nominalFrameRate)
+        let duration = try await asset.load(.duration)
+
+        let width = max(
+            16,
+            Int(abs(naturalSize.width).rounded())
+        )
+        let height = max(
+            16,
+            Int(abs(naturalSize.height).rounded())
+        )
+
+        let bitrate = nitroTargetBitrate(
+            width: width,
+            height: height,
+            fps: fps
+        )
+
         let reader: AVAssetReader
 
         do {
@@ -441,6 +606,7 @@ final class MediaCompressor {
             )
         }
 
+        // NV12 is the native fast path for Apple's hardware decoder/encoder.
         let readerOutput = AVAssetReaderTrackOutput(
             track: track,
             outputSettings: [
@@ -453,170 +619,305 @@ final class MediaCompressor {
 
         guard reader.canAdd(readerOutput) else {
             throw CompressionError.exportFailed(
-                "videotrack kan niet worden gelezen"
+                "videotrack kan niet via de hardware-pipeline worden gelezen"
             )
         }
 
         reader.add(readerOutput)
 
-        let naturalSize = try await track.load(.naturalSize)
-        let transform = try await track.load(.preferredTransform)
-        let fps = try await track.load(.nominalFrameRate)
-        let duration = try await asset.load(.duration)
+        var session: VTCompressionSession?
 
-        let width = max(16, Int(abs(naturalSize.width).rounded()))
-        let height = max(16, Int(abs(naturalSize.height).rounded()))
-        // NITRO archive bitrates: intentionally aggressive. Resolution and
-        // timing stay intact, but 10-bit/high-bitrate camera originals become
-        // compact 8-bit 4:2:0 HEVC archive copies.
-        let bitrate = nitroTargetBitrate(
-            width: width,
-            height: height,
-            fps: fps
+        // First demand Apple's hardware media engine. Only if a Mac truly
+        // cannot provide it do we fall back to "hardware preferred".
+        let requiredHardware: CFDictionary = [
+            kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder:
+                kCFBooleanTrue as Any
+        ] as CFDictionary
+
+        var status = VTCompressionSessionCreate(
+            allocator: kCFAllocatorDefault,
+            width: Int32(width),
+            height: Int32(height),
+            codecType: kCMVideoCodecType_HEVC,
+            encoderSpecification: requiredHardware,
+            imageBufferAttributes: [
+                kCVPixelBufferPixelFormatTypeKey as String:
+                    Int(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+                kCVPixelBufferWidthKey as String: width,
+                kCVPixelBufferHeightKey as String: height,
+                kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+            ] as CFDictionary,
+            compressedDataAllocator: nil,
+            outputCallback: nil,
+            refcon: nil,
+            compressionSessionOut: &session
         )
 
-        let writer: AVAssetWriter
+        if status != noErr || session == nil {
+            let preferredHardware: CFDictionary = [
+                kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder:
+                    kCFBooleanTrue as Any
+            ] as CFDictionary
 
-        do {
-            writer = try AVAssetWriter(
-                outputURL: destination,
-                fileType: .mov
-            )
-        } catch {
-            throw CompressionError.exportFailed(
-                error.localizedDescription
+            status = VTCompressionSessionCreate(
+                allocator: kCFAllocatorDefault,
+                width: Int32(width),
+                height: Int32(height),
+                codecType: kCMVideoCodecType_HEVC,
+                encoderSpecification: preferredHardware,
+                imageBufferAttributes: [
+                    kCVPixelBufferPixelFormatTypeKey as String:
+                        Int(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+                    kCVPixelBufferWidthKey as String: width,
+                    kCVPixelBufferHeightKey as String: height,
+                    kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+                ] as CFDictionary,
+                compressedDataAllocator: nil,
+                outputCallback: nil,
+                refcon: nil,
+                compressionSessionOut: &session
             )
         }
 
-        let writerInput = AVAssetWriterInput(
-            mediaType: .video,
-            outputSettings: [
-                AVVideoCodecKey: AVVideoCodecType.hevc,
-                AVVideoWidthKey: width,
-                AVVideoHeightKey: height,
-
-                // Prefer Apple's hardware media engine whenever available.
-                AVVideoEncoderSpecificationKey: [
-                    kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder as String: true
-                ],
-
-                AVVideoCompressionPropertiesKey: [
-                    AVVideoAverageBitRateKey: bitrate,
-                    AVVideoExpectedSourceFrameRateKey:
-                        max(1, Int(fps.rounded())),
-                    AVVideoMaxKeyFrameIntervalKey:
-                        max(30, Int(max(fps, 25) * 2)),
-                    AVVideoAllowFrameReorderingKey: false,
-
-                    // NITRO: tell VideoToolbox that throughput matters more
-                    // than squeezing the final few percent of quality.
-                    kVTCompressionPropertyKey_RealTime as String: true,
-                    kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality as String: true
-                ]
-            ]
-        )
-
-        writerInput.transform = transform
-        writerInput.expectsMediaDataInRealTime = false
-
-        guard writer.canAdd(writerInput) else {
+        guard status == noErr,
+              let session else {
             throw CompressionError.exportFailed(
-                "HEVC-writer ondersteunt deze videotrack niet"
+                "VideoToolbox HEVC-hardwareencoder kon niet worden gestart (\(status))"
             )
         }
 
-        writer.add(writerInput)
+        defer {
+            VTCompressionSessionInvalidate(session)
+        }
 
-        guard writer.startWriting() else {
+        func set(
+            _ key: CFString,
+            _ value: CFTypeRef,
+            required: Bool = false
+        ) throws {
+            let result = VTSessionSetProperty(
+                session,
+                key: key,
+                value: value
+            )
+
+            if required && result != noErr {
+                throw CompressionError.exportFailed(
+                    "VideoToolbox-instelling \(key) kon niet worden toegepast (\(result))"
+                )
+            }
+        }
+
+        try set(
+            kVTCompressionPropertyKey_AverageBitRate,
+            NSNumber(value: bitrate),
+            required: true
+        )
+
+        try set(
+            kVTCompressionPropertyKey_RealTime,
+            kCFBooleanTrue,
+            required: false
+        )
+
+        try set(
+            kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
+            kCFBooleanTrue,
+            required: false
+        )
+
+        try set(
+            kVTCompressionPropertyKey_AllowFrameReordering,
+            kCFBooleanFalse,
+            required: false
+        )
+
+        try set(
+            kVTCompressionPropertyKey_ExpectedFrameRate,
+            NSNumber(value: max(1, fps)),
+            required: false
+        )
+
+        try set(
+            kVTCompressionPropertyKey_MaxKeyFrameInterval,
+            NSNumber(
+                value: max(
+                    30,
+                    Int(max(fps, 25) * 2)
+                )
+            ),
+            required: false
+        )
+
+        try set(
+            kVTCompressionPropertyKey_MaxFrameDelayCount,
+            NSNumber(value: 0),
+            required: false
+        )
+
+        try set(
+            kVTCompressionPropertyKey_ProfileLevel,
+            kVTProfileLevel_HEVC_Main_AutoLevel,
+            required: false
+        )
+
+        let prepareStatus = VTCompressionSessionPrepareToEncodeFrames(
+            session
+        )
+
+        guard prepareStatus == noErr else {
             throw CompressionError.exportFailed(
-                writer.error?.localizedDescription ??
-                "HEVC-writer kon niet starten"
+                "VideoToolbox kon de hardwareencoder niet voorbereiden (\(prepareStatus))"
             )
         }
 
         guard reader.startReading() else {
-            writer.cancelWriting()
             throw CompressionError.exportFailed(
                 reader.error?.localizedDescription ??
                 "videoreader kon niet starten"
             )
         }
 
-        writer.startSession(atSourceTime: .zero)
+        let sink = VTEncodedMovieSink(
+            destination: destination,
+            transform: transform
+        )
+
+        let errorBox = VTEncodeErrorBox()
+        let group = DispatchGroup()
 
         let totalSeconds = max(
             0.001,
             CMTimeGetSeconds(duration)
         )
 
-        try await withCheckedThrowingContinuation {
-            (continuation: CheckedContinuation<Void, Error>) in
+        while reader.status == .reading,
+              let sample = readerOutput.copyNextSampleBuffer() {
+            if let pendingError = errorBox.load() {
+                reader.cancelReading()
+                throw pendingError
+            }
 
-            let queue = DispatchQueue(
-                label: "nl.maarten.VideoArchiveCompressor.extremeHEVC"
+            guard let imageBuffer = CMSampleBufferGetImageBuffer(
+                sample
+            ) else {
+                reader.cancelReading()
+                throw CompressionError.exportFailed(
+                    "videoframe bevat geen pixelbuffer"
+                )
+            }
+
+            let pts = CMSampleBufferGetPresentationTimeStamp(
+                sample
             )
 
-            writerInput.requestMediaDataWhenReady(on: queue) {
-                while writerInput.isReadyForMoreMediaData {
-                    if let sample = readerOutput.copyNextSampleBuffer() {
-                        if !writerInput.append(sample) {
-                            writerInput.markAsFinished()
-                            reader.cancelReading()
-                            writer.cancelWriting()
+            let frameDuration = CMSampleBufferGetDuration(
+                sample
+            )
 
-                            continuation.resume(
-                                throwing: CompressionError.exportFailed(
-                                    writer.error?.localizedDescription ??
-                                    "HEVC-frame kon niet worden geschreven"
-                                )
-                            )
-                            return
-                        }
+            group.enter()
 
-                        let seconds = CMTimeGetSeconds(
-                            CMSampleBufferGetPresentationTimeStamp(sample)
+            var infoFlags = VTEncodeInfoFlags()
+
+            let encodeStatus = VTCompressionSessionEncodeFrame(
+                session,
+                imageBuffer: imageBuffer,
+                presentationTimeStamp: pts,
+                duration: frameDuration.isValid
+                    ? frameDuration
+                    : .invalid,
+                frameProperties: nil,
+                infoFlagsOut: &infoFlags
+            ) {
+                status,
+                flags,
+                encodedSample in
+
+                defer {
+                    group.leave()
+                }
+
+                guard status == noErr else {
+                    errorBox.store(
+                        CompressionError.exportFailed(
+                            "VideoToolbox encode-fout \(status)"
                         )
+                    )
+                    return
+                }
 
-                        if seconds.isFinite {
-                            onProgress(
-                                min(
-                                    0.99,
-                                    max(0, seconds / totalSeconds)
-                                )
-                            )
-                        }
-                    } else {
-                        writerInput.markAsFinished()
+                if flags.contains(.frameDropped) {
+                    errorBox.store(
+                        CompressionError.exportFailed(
+                            "VideoToolbox heeft een frame laten vallen"
+                        )
+                    )
+                    return
+                }
 
-                        if reader.status == .failed {
-                            writer.cancelWriting()
-                            continuation.resume(
-                                throwing: CompressionError.exportFailed(
-                                    reader.error?.localizedDescription ??
-                                    "videoreader is mislukt"
-                                )
-                            )
-                            return
-                        }
+                guard let encodedSample else {
+                    errorBox.store(
+                        CompressionError.exportFailed(
+                            "VideoToolbox gaf geen HEVC-frame terug"
+                        )
+                    )
+                    return
+                }
 
-                        writer.finishWriting {
-                            if writer.status == .completed {
-                                continuation.resume()
-                            } else {
-                                continuation.resume(
-                                    throwing: CompressionError.exportFailed(
-                                        writer.error?.localizedDescription ??
-                                        "HEVC-export kon niet worden afgerond"
-                                    )
-                                )
-                            }
-                        }
-
-                        return
-                    }
+                do {
+                    try sink.append(encodedSample)
+                } catch {
+                    errorBox.store(error)
                 }
             }
+
+            if encodeStatus != noErr {
+                group.leave()
+                reader.cancelReading()
+
+                throw CompressionError.exportFailed(
+                    "VideoToolbox accepteerde frame niet (\(encodeStatus))"
+                )
+            }
+
+            let seconds = CMTimeGetSeconds(pts)
+
+            if seconds.isFinite {
+                onProgress(
+                    min(
+                        0.995,
+                        max(0, seconds / totalSeconds)
+                    )
+                )
+            }
         }
+
+        if reader.status == .failed {
+            throw CompressionError.exportFailed(
+                reader.error?.localizedDescription ??
+                "videoreader is mislukt"
+            )
+        }
+
+        let completeStatus = VTCompressionSessionCompleteFrames(
+            session,
+            untilPresentationTimeStamp: .invalid
+        )
+
+        guard completeStatus == noErr else {
+            throw CompressionError.exportFailed(
+                "VideoToolbox kon de laatste frames niet afronden (\(completeStatus))"
+            )
+        }
+
+        group.wait()
+
+        if let pendingError = errorBox.load() {
+            throw pendingError
+        }
+
+        try await sink.finish()
+        onProgress(1.0)
     }
 
     private func nitroTargetBitrate(
