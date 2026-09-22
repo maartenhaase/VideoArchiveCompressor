@@ -1464,14 +1464,16 @@ final class MediaCompressor {
         let pixels = width * height
         let highFrameRate = fps > 30
 
+        // MAX COMPRESSIE: keep every source pixel, but accept visible
+        // archive artefacts in exchange for drastically smaller files.
         if pixels <= 1920 * 1080 {
-            return highFrameRate ? 3_500_000 : 2_500_000
+            return highFrameRate ? 2_500_000 : 1_800_000
         } else if pixels <= 2560 * 1440 {
-            return highFrameRate ? 5_000_000 : 4_000_000
+            return highFrameRate ? 4_000_000 : 3_000_000
         } else if pixels <= 3840 * 2160 {
-            return highFrameRate ? 8_000_000 : 6_000_000
+            return highFrameRate ? 6_000_000 : 4_500_000
         } else {
-            return highFrameRate ? 12_000_000 : 9_000_000
+            return highFrameRate ? 9_000_000 : 7_000_000
         }
     }
 
