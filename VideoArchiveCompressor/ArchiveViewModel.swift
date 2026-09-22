@@ -110,6 +110,138 @@ final class ArchiveViewModel: ObservableObject {
         start(limit: nil, keepBackups: true)
     }
 
+    func startFlash720VideoOnly() {
+        guard let root = sourceURL else {
+            lastError = "Kies eerst een harde schijf, hoofdmap of FCP Library."
+            return
+        }
+
+        guard !isRunning else { return }
+
+        if finalCutIsRunning {
+            lastError = "Sluit Final Cut Pro eerst."
+            return
+        }
+
+        if existingBackupCount > 0 {
+            lastError = """
+            Er staan nog .VAC_ORIGINAL herstelbestanden op deze bron.
+            Herstel of verwijder die eerst voordat FLASH wordt gestart.
+            """
+            return
+        }
+
+        isRunning = true
+        stopAfterCurrent = false
+        preset = .flash720
+        utilitySummary = nil
+        utilityProgress = 0
+
+        Task {
+            statusText = "FLASH 720p • video's scannen…"
+
+            let result = await Task.detached(priority: .userInitiated) {
+                MediaScanner.scan(root: root)
+            }.value
+
+            applyScanResult(result)
+
+            for i in jobs.indices {
+                jobs[i].state = .queued
+                jobs[i].progress = 0
+                jobs[i].outputBytes = nil
+            }
+
+            if jobs.isEmpty {
+                isRunning = false
+                utilitySummary = "Geen nieuwe MOV/MP4/M4V-video's gevonden."
+                return
+            }
+
+            var verifiedURLs: [URL] = []
+            var processedIndices = Set<Int>()
+
+            statusText = "FLASH 720p • automatische veiligheidstest…"
+
+            for index in jobs.indices {
+                if verifiedURLs.count >= 3 { break }
+                if stopAfterCurrent { break }
+
+                let outcome = await compressOne(
+                    index: index,
+                    keepBackup: true
+                )
+
+                processedIndices.insert(index)
+
+                switch outcome {
+                case .converted:
+                    verifiedURLs.append(jobs[index].url)
+
+                case .skipped:
+                    continue
+
+                case .failed(let message):
+                    isRunning = false
+                    lastError = """
+                    FLASH 720p is gestopt tijdens de automatische veiligheidstest.
+
+                    \(jobs[index].fileName)
+                    \(message)
+
+                    Geslaagde testclips hebben hun .VAC_ORIGINAL-backup behouden.
+                    """
+                    return
+                }
+            }
+
+            if stopAfterCurrent {
+                isRunning = false
+                statusText = "Gestopt."
+                return
+            }
+
+            for url in verifiedURLs {
+                deleteBackup(for: url)
+            }
+
+            let totalCount = max(1, jobs.count)
+            statusText = "FLASH 720p • hardware H.264 comprimeren…"
+
+            for index in jobs.indices {
+                if processedIndices.contains(index) { continue }
+                if stopAfterCurrent { break }
+
+                _ = await compressOne(
+                    index: index,
+                    keepBackup: false
+                )
+
+                utilityProgress = Double(index + 1) /
+                    Double(totalCount)
+            }
+
+            isRunning = false
+            utilityProgress = 1
+
+            let convertedCount = jobs.reduce(0) { count, job in
+                if case .done = job.state {
+                    return count + 1
+                }
+                return count
+            }
+
+            utilitySummary = """
+            FLASH 720p klaar.
+            \(convertedCount) video's gecomprimeerd.
+            \(savedBytes.storageString) ruimte bespaard.
+            Resolutie is maximaal 1280×720; framerate/timecode blijven behouden.
+            """
+
+            statusText = "FLASH 720p klaar • \(savedBytes.storageString) bespaard"
+        }
+    }
+
     func startNitroVideoOnly() {
         guard let root = sourceURL else {
             lastError = "Kies eerst een harde schijf, hoofdmap of FCP Library."
