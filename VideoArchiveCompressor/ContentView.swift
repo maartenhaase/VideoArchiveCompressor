@@ -7,6 +7,11 @@ struct ContentView: View {
     @State private var showFlashConfirm = false
     @State private var showNitroConfirm = false
     @State private var showOrganizeConfirm = false
+    // Legacy controls are no longer shown, but their private views still
+    // compile for now while the UI stays intentionally limited to 3 modes.
+    @State private var showFullBatchConfirm = false
+    @State private var showExtremeConfirm = false
+    @State private var showPhotoConfirm = false
 
     var body: some View {
         VStack(spacing: 0) {
