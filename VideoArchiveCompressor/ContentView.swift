@@ -57,11 +57,11 @@ struct ContentView: View {
             )
         }
         .confirmationDialog(
-            "NITRO MAX starten?",
+            "MAX COMPRESSIE starten?",
             isPresented: $showNitroConfirm,
             titleVisibility: .visible
         ) {
-            Button("Start NITRO MAX", role: .destructive) {
+            Button("Start MAX COMPRESSIE", role: .destructive) {
                 model.startNitroVideoOnly()
             }
             Button("Annuleer", role: .cancel) {}
@@ -253,11 +253,26 @@ struct ContentView: View {
             VStack(spacing: 14) {
                 HStack(spacing: 12) {
                     OperationTile(
-                        icon: "hare.fill",
-                        title: "1. FLASH 720p",
-                        subtitle: "ALLERSNELST. Hardware H.264, maximaal 1280×720 en ±1,5–2,2 Mbit/s. Beste keuze als snelheid belangrijker is dan 4K/1080p bewaren.",
-                        buttonTitle: "START FLASH",
+                        icon: "folder.badge.gearshape",
+                        title: "1. OPRUIMEN",
+                        subtitle: "BEGIN HIER. Geen video-encode. Verwijdert hermaakbare Final Cut-cache en sorteert projecten en losse bestanden op jaar/type.",
+                        buttonTitle: "STAP 1 • RUIM & SORTEER",
                         prominent: true
+                    ) {
+                        showOrganizeConfirm = true
+                    }
+                    .disabled(
+                        model.sourceURL == nil ||
+                        model.isRunning ||
+                        model.isScanning ||
+                        model.finalCutIsRunning
+                    )
+
+                    OperationTile(
+                        icon: "hare.fill",
+                        title: "2. FLASH 720p",
+                        subtitle: "GRUWELIJK SNEL + KLEIN. Hardware H.264, maximaal 1280×720 en ±1,5–2,2 Mbit/s. Dit is de snelste archiefmodus.",
+                        buttonTitle: "STAP 2 • START 720p"
                     ) {
                         showFlashConfirm = true
                     }
@@ -269,27 +284,12 @@ struct ContentView: View {
                     )
 
                     OperationTile(
-                        icon: "bolt.fill",
-                        title: "2. NITRO MAX",
-                        subtitle: "Behoudt originele resolutie. Directe hardware-HEVC met agressieve bitrate. Mooier, maar trager dan FLASH.",
-                        buttonTitle: "START NITRO"
+                        icon: "shippingbox.fill",
+                        title: "3. MAX COMPRESSIE",
+                        subtitle: "Originele resolutie blijft behouden. Hardware HEVC met zeer lage bitrate: 1080p ±1,8–2,5 en 4K ±4,5–6 Mbit/s. Kleiner, maar trager.",
+                        buttonTitle: "STAP 3 • MAX COMPRESSIE"
                     ) {
                         showNitroConfirm = true
-                    }
-                    .disabled(
-                        model.sourceURL == nil ||
-                        model.isRunning ||
-                        model.isScanning ||
-                        model.finalCutIsRunning
-                    )
-
-                    OperationTile(
-                        icon: "folder.badge.gearshape",
-                        title: "3. OPRUIMEN",
-                        subtitle: "Geen video-encode. Verwijdert alle hermaakbare FCP-cache en sorteert projecten en losse bestanden op jaar/type.",
-                        buttonTitle: "RUIM & SORTEER"
-                    ) {
-                        showOrganizeConfirm = true
                     }
                     .disabled(
                         model.sourceURL == nil ||
@@ -336,8 +336,8 @@ struct ContentView: View {
                 }
 
                 Label(
-                    "Zwart-wit levert verrassend weinig op: H.264/HEVC bewaren kleur al sterk gesubsampled. Resolutie verlagen bespaart véél meer data en rekentijd.",
-                    systemImage: "info.circle"
+                    "Aanbevolen volgorde: eerst OPRUIMEN, daarna voor oud noodarchief FLASH 720p. Gebruik MAX COMPRESSIE alleen als je de oorspronkelijke resolutie echt wilt bewaren.",
+                    systemImage: "arrow.right.circle"
                 )
                 .font(.caption)
                 .foregroundColor(.secondary)
@@ -346,8 +346,8 @@ struct ContentView: View {
             .padding(12)
         } label: {
             Label(
-                "Kies één van 3 modi",
-                systemImage: "speedometer"
+                "3 duidelijke stappen",
+                systemImage: "list.number"
             )
         }
     }
