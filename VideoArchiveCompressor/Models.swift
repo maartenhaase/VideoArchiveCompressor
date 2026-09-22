@@ -13,7 +13,7 @@ enum ArchivePreset: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .flash720: return "FLASH 720p • allersnelst"
-        case .extremeOriginalResolution: return "NITRO MAX • resolutie behouden"
+        case .extremeOriginalResolution: return "MAX COMPRESSIE • originele resolutie"
         case .tinyHD: return "Tiny HD"
         case .compact4K: return "Compact 4K"
         case .preserveResolution: return "Resolutie behouden"
@@ -25,7 +25,7 @@ enum ArchivePreset: String, CaseIterable, Identifiable {
         case .flash720:
             return "Max. 1280×720 • hardware H.264 • absolute snelheid • zeer klein"
         case .extremeOriginalResolution:
-            return "Zelfde resolutie • directe VideoToolbox HEVC • speed priority • agressieve bitrate"
+            return "Zelfde resolutie • hardware HEVC • zeer zware compressie • klein archief"
         case .tinyHD:
             return "Max. 1080p HEVC • kleinste archief"
         case .compact4K:
