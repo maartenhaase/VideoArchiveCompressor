@@ -6,6 +6,9 @@ struct ContentView: View {
     @State private var isTargeted = false
     @State private var showFullBatchConfirm = false
     @State private var showExtremeConfirm = false
+    @State private var showNitroConfirm = false
+    @State private var showOrganizeConfirm = false
+    @State private var showPhotoConfirm = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -15,7 +18,7 @@ struct ContentView: View {
             ScrollView {
                 VStack(spacing: 18) {
                     sourceCard
-                    extremeCard
+                    operationsCard
                     presetCard
                     actionCard
                     queueCard
@@ -36,6 +39,51 @@ struct ContentView: View {
             }
         } message: {
             Text(model.lastError ?? "")
+        }
+        .confirmationDialog(
+            "NITRO video-compressie starten?",
+            isPresented: $showNitroConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Start NITRO", role: .destructive) {
+                model.startNitroVideoOnly()
+            }
+            Button("Annuleer", role: .cancel) {}
+        } message: {
+            Text(
+                "Video's worden agressief naar hardware-HEVC gecomprimeerd met behoud van resolutie. " +
+                "De eerste clips worden automatisch als veiligheidstest gecontroleerd op Final Cut-compatibiliteit."
+            )
+        }
+        .confirmationDialog(
+            "Schijf opruimen en herstructureren?",
+            isPresented: $showOrganizeConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Opruimen & sorteren", role: .destructive) {
+                model.startOrganizeOnly()
+            }
+            Button("Annuleer", role: .cancel) {}
+        } message: {
+            Text(
+                "Projectmappen worden per jaar en type geordend, losse documenten/foto's/audio worden gesorteerd " +
+                "en opnieuw maakbare Final Cut render/proxy/analysebestanden worden verwijderd."
+            )
+        }
+        .confirmationDialog(
+            "Foto's snel comprimeren?",
+            isPresented: $showPhotoConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Start FOTO TURBO", role: .destructive) {
+                model.startPhotoCompressionOnly()
+            }
+            Button("Annuleer", role: .cancel) {}
+        } message: {
+            Text(
+                "JPEG- en HEIC-foto's worden parallel opnieuw gecomprimeerd. De pixelresolutie blijft gelijk; " +
+                "foto's die nauwelijks kleiner worden blijven onaangeraakt."
+            )
         }
         .confirmationDialog(
             "EXTREME ONE CLICK starten?",
@@ -234,55 +282,75 @@ struct ContentView: View {
         }
     }
 
-    private var extremeCard: some View {
+    private var operationsCard: some View {
         GroupBox {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .top, spacing: 16) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 12)
-                            .fill(Color.accentColor.opacity(0.12))
-                            .frame(width: 58, height: 58)
-
-                        Image(systemName: "wand.and.stars")
-                            .font(.system(size: 27, weight: .semibold))
-                            .foregroundColor(.accentColor)
+            VStack(spacing: 14) {
+                HStack(spacing: 12) {
+                    OperationTile(
+                        icon: "bolt.fill",
+                        title: "NITRO VIDEO",
+                        subtitle: "Alleen video's. Zelfde resolutie, hardware-HEVC, agressieve bitrate en interne SSD als tijdelijke werkruimte.",
+                        buttonTitle: "COMPRESS VIDEO'S",
+                        prominent: true
+                    ) {
+                        showNitroConfirm = true
                     }
+                    .disabled(
+                        model.sourceURL == nil ||
+                        model.isRunning ||
+                        model.isScanning ||
+                        model.finalCutIsRunning
+                    )
 
-                    VStack(alignment: .leading, spacing: 5) {
-                        HStack(spacing: 8) {
-                            Text("EXTREME ONE CLICK")
-                                .font(.title3.weight(.bold))
+                    OperationTile(
+                        icon: "folder.badge.gearshape",
+                        title: "OPRUIMEN",
+                        subtitle: "Geen video-encode. Projecten per jaar/type, documenten/screenshots/audio sorteren en FCP-cache verwijderen.",
+                        buttonTitle: "RUIM & SORTEER"
+                    ) {
+                        showOrganizeConfirm = true
+                    }
+                    .disabled(
+                        model.sourceURL == nil ||
+                        model.isRunning ||
+                        model.isScanning ||
+                        model.finalCutIsRunning
+                    )
 
-                            Text("HELE SCHIJF")
-                                .font(.caption2.weight(.bold))
-                                .padding(.horizontal, 7)
-                                .padding(.vertical, 3)
-                                .background(
-                                    Capsule()
-                                        .fill(Color.accentColor.opacity(0.14))
-                                )
-                                .foregroundColor(.accentColor)
-                        }
+                    OperationTile(
+                        icon: "photo.stack.fill",
+                        title: "FOTO TURBO",
+                        subtitle: "JPEG/HEIC parallel kleiner maken. Zelfde pixelresolutie; vooral bedoeld voor grote losse fotoarchieven.",
+                        buttonTitle: "COMPRESS FOTO'S"
+                    ) {
+                        showPhotoConfirm = true
+                    }
+                    .disabled(
+                        model.sourceURL == nil ||
+                        model.isRunning ||
+                        model.isScanning
+                    )
+                }
+
+                Divider()
+
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Alles liever automatisch achter elkaar?")
+                            .font(.subheadline.weight(.semibold))
 
                         Text(
-                            "1. FCP render/proxy/cache opruimen  •  " +
-                            "2. video's HEVC comprimeren met dezelfde resolutie  •  " +
-                            "3. projecten herkennen  •  " +
-                            "4. sorteren op jaar/type  •  " +
-                            "5. documenten, screenshots, foto's, audio en overige bestanden ordenen"
+                            "De bestaande One Click-modus combineert video-compressie + opruimen/sorteren."
                         )
-                        .font(.subheadline)
+                        .font(.caption)
                         .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                     }
 
                     Spacer()
 
-                    Button("RUIM ALLES OP") {
+                    Button("ALLES IN ÉÉN") {
                         showExtremeConfirm = true
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
                     .disabled(
                         model.sourceURL == nil ||
                         model.isRunning ||
@@ -291,27 +359,63 @@ struct ContentView: View {
                     )
                 }
 
-                if let summary = model.extremeSummary {
+                if model.isRunning {
+                    Divider()
+
+                    VStack(spacing: 7) {
+                        HStack {
+                            Text(model.statusText)
+                                .font(.subheadline.weight(.medium))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+
+                            Spacer()
+
+                            Button("Stop na huidige") {
+                                model.stop()
+                            }
+                        }
+
+                        ProgressView(
+                            value: max(
+                                model.utilityProgress,
+                                model.overallProgress
+                            )
+                        )
+                    }
+                }
+
+                if let summary = model.utilitySummary {
                     Divider()
 
                     Label(summary, systemImage: "checkmark.circle.fill")
                         .font(.subheadline)
                         .foregroundColor(.green)
                         .textSelection(.enabled)
-                } else {
-                    Label(
-                        "Projectbestanden blijven bij hun project. FCP-bundles met externe/symlinked media worden niet automatisch verplaatst.",
-                        systemImage: "shield.checkered"
-                    )
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else if let summary = model.extremeSummary {
+                    Divider()
+
+                    Label(summary, systemImage: "checkmark.circle.fill")
+                        .font(.subheadline)
+                        .foregroundColor(.green)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
+
+                Label(
+                    "Snelheidswinst: NITRO encodeert via Apple's hardware-encoder en schrijft tijdelijke videodata naar de interne Mac-schijf in plaats van tegelijk te lezen én schrijven op dezelfde externe HDD.",
+                    systemImage: "speedometer"
+                )
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(12)
         } label: {
             Label(
-                "Automatische archiefmodus",
-                systemImage: "externaldrive.fill.badge.checkmark"
+                "Snelle functies",
+                systemImage: "bolt.horizontal.circle.fill"
             )
         }
     }
@@ -517,6 +621,77 @@ struct ContentView: View {
     }
 }
 
+private struct OperationTile: View {
+    let icon: String
+    let title: String
+    let subtitle: String
+    let buttonTitle: String
+    var prominent: Bool = false
+    let action: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Image(systemName: icon)
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundColor(.accentColor)
+
+                Text(title)
+                    .font(.headline)
+
+                Spacer()
+            }
+
+            Text(subtitle)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Spacer(minLength: 4)
+
+            Button(buttonTitle, action: action)
+                .buttonStyle(
+                    prominent
+                        ? AnyButtonStyle(.borderedProminent)
+                        : AnyButtonStyle(.bordered)
+                )
+        }
+        .padding(13)
+        .frame(maxWidth: .infinity, minHeight: 165, alignment: .topLeading)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(
+                    prominent
+                        ? Color.accentColor.opacity(0.09)
+                        : Color.secondary.opacity(0.05)
+                )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(
+                    prominent
+                        ? Color.accentColor.opacity(0.8)
+                        : Color.secondary.opacity(0.16),
+                    lineWidth: prominent ? 1.5 : 1
+                )
+        )
+    }
+}
+
+private struct AnyButtonStyle: PrimitiveButtonStyle {
+    private let makeBodyClosure: (Configuration) -> AnyView
+
+    init<S: PrimitiveButtonStyle>(_ style: S) {
+        makeBodyClosure = { configuration in
+            AnyView(style.makeBody(configuration: configuration))
+        }
+    }
+
+    func makeBody(configuration: Configuration) -> some View {
+        makeBodyClosure(configuration)
+    }
+}
+
 private struct PresetTile: View {
     let preset: ArchivePreset
     let selected: Bool
@@ -543,7 +718,7 @@ private struct PresetTile: View {
                     .multilineTextAlignment(.leading)
 
                 if preset == .extremeOriginalResolution {
-                    Text("EXTREME / AANBEVOLEN")
+                    Text("NITRO / SNELST")
                         .font(.caption2.weight(.bold))
                         .foregroundColor(.accentColor)
                 }
