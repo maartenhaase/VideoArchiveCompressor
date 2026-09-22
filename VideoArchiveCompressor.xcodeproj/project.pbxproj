@@ -14,6 +14,7 @@
 		A00000000000000000000005 /* ArchiveViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000005 /* ArchiveViewModel.swift */; };
 		A00000000000000000000006 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000006 /* ContentView.swift */; };
 		A00000000000000000000008 /* ArchiveOrganizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000008 /* ArchiveOrganizer.swift */; };
+		A00000000000000000000009 /* PhotoCompressor.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000009 /* PhotoCompressor.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -25,6 +26,7 @@
 		B00000000000000000000006 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		B00000000000000000000007 /* Video Archive Compressor.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Video Archive Compressor.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		B00000000000000000000008 /* ArchiveOrganizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveOrganizer.swift; sourceTree = "<group>"; };
+		B00000000000000000000009 /* PhotoCompressor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoCompressor.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -56,6 +58,7 @@
 				B00000000000000000000005 /* ArchiveViewModel.swift */,
 				B00000000000000000000006 /* ContentView.swift */,
 				B00000000000000000000008 /* ArchiveOrganizer.swift */,
+				B00000000000000000000009 /* PhotoCompressor.swift */,
 			);
 			path = VideoArchiveCompressor;
 			sourceTree = "<group>";
@@ -143,6 +146,7 @@
 				A00000000000000000000005 /* ArchiveViewModel.swift in Sources */,
 				A00000000000000000000006 /* ContentView.swift in Sources */,
 				A00000000000000000000008 /* ArchiveOrganizer.swift in Sources */,
+				A00000000000000000000009 /* PhotoCompressor.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
