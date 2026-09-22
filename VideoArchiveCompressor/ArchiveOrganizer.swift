@@ -35,6 +35,18 @@ struct OrganizeSummary {
 enum ArchiveOrganizer {
     static let archiveFolderName = "ARCHIEF_GESORTEERD"
 
+    private static let legacyFinalCutRootNames: Set<String> = [
+        "final cut projects",
+        "final cut events",
+        "final cut external media"
+    ]
+
+    private static let generatedFinalCutFolderNames: Set<String> = [
+        "render files",
+        "transcoded media",
+        "analysis files"
+    ]
+
     private static let videoExtensions: Set<String> = [
         "mov", "mp4", "m4v", "mts", "m2ts", "mxf", "avi"
     ]
@@ -94,9 +106,16 @@ enum ArchiveOrganizer {
                     continue
                 }
 
-                if protectedSystemFolders.contains(
-                    child.lastPathComponent.lowercased()
-                ) {
+                let lowerChildName = child.lastPathComponent.lowercased()
+
+                if protectedSystemFolders.contains(lowerChildName) {
+                    continue
+                }
+
+                // Legacy Final Cut Pro X expected these exact root folders on
+                // the volume. Clean generated media inside them, but do not
+                // reorganize their databases/events automatically.
+                if legacyFinalCutRootNames.contains(lowerChildName) {
                     continue
                 }
 
@@ -172,28 +191,69 @@ enum ArchiveOrganizer {
 
         guard let enumerator = fm.enumerator(
             at: root,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles],
+            includingPropertiesForKeys: [
+                .isDirectoryKey,
+                .isPackageKey
+            ],
+            // Do NOT skip hidden files: modern FCP often stores generated
+            // cache in hidden .fcpcache bundles.
+            options: [],
             errorHandler: { _, _ in true }
         ) else {
             return 0
         }
 
         while let url = enumerator.nextObject() as? URL {
-            let lower = url.path.lowercased()
+            let values = try? url.resourceValues(
+                forKeys: [
+                    .isDirectoryKey,
+                    .isPackageKey
+                ]
+            )
 
-            guard lower.contains(".fcpbundle/") else { continue }
+            guard values?.isDirectory == true else { continue }
 
+            let lowerPath = url.path.lowercased()
             let name = url.lastPathComponent.lowercased()
+            let ext = url.pathExtension.lowercased()
 
-            if [
-                "render files",
-                "transcoded media",
-                "analysis files"
-            ].contains(name) {
-                reclaimed += folderSize(url)
+            if url.lastPathComponent == archiveFolderName {
+                enumerator.skipDescendants()
+                continue
+            }
+
+            // External or in-library FCP cache bundle. Normally this is 100%
+            // regenerable. As an extra safety check, never delete the entire
+            // bundle if it unexpectedly contains an Original Media folder.
+            if ext == "fcpcache" {
+                if containsFolderNamed(
+                    "original media",
+                    inside: url
+                ) {
+                    // Keep walking it: known generated children below will
+                    // still be purged safely.
+                    continue
+                }
+
+                reclaimed += folderSizeIncludingHidden(url)
                 try? fm.removeItem(at: url)
                 enumerator.skipDescendants()
+                continue
+            }
+
+            let isModernLibrary =
+                lowerPath.contains(".fcpbundle/")
+
+            let isLegacyFinalCut =
+                lowerPath.contains("/final cut projects/") ||
+                lowerPath.contains("/final cut events/")
+
+            if (isModernLibrary || isLegacyFinalCut) &&
+                generatedFinalCutFolderNames.contains(name) {
+                reclaimed += folderSizeIncludingHidden(url)
+                try? fm.removeItem(at: url)
+                enumerator.skipDescendants()
+                continue
             }
         }
 
@@ -265,8 +325,11 @@ enum ArchiveOrganizer {
 
             if values?.isDirectory == true {
                 let lowerName = url.lastPathComponent.lowercased()
+                let ext = url.pathExtension.lowercased()
 
                 if protectedSystemFolders.contains(lowerName) ||
+                    legacyFinalCutRootNames.contains(lowerName) ||
+                    ext == "fcpcache" ||
                     values?.isPackage == true {
                     enumerator.skipDescendants()
                 }
@@ -822,6 +885,70 @@ enum ArchiveOrganizer {
         }
 
         return false
+    }
+
+    private static func containsFolderNamed(
+        _ targetName: String,
+        inside root: URL
+    ) -> Bool {
+        let fm = FileManager.default
+
+        guard let enumerator = fm.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [],
+            errorHandler: { _, _ in true }
+        ) else {
+            return false
+        }
+
+        while let url = enumerator.nextObject() as? URL {
+            let values = try? url.resourceValues(
+                forKeys: [.isDirectoryKey]
+            )
+
+            if values?.isDirectory == true &&
+                url.lastPathComponent.lowercased() == targetName {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private static func folderSizeIncludingHidden(
+        _ url: URL
+    ) -> Int64 {
+        let fm = FileManager.default
+
+        guard let enumerator = fm.enumerator(
+            at: url,
+            includingPropertiesForKeys: [
+                .isRegularFileKey,
+                .fileSizeKey
+            ],
+            options: [],
+            errorHandler: { _, _ in true }
+        ) else {
+            return 0
+        }
+
+        var total: Int64 = 0
+
+        while let item = enumerator.nextObject() as? URL {
+            let values = try? item.resourceValues(
+                forKeys: [
+                    .isRegularFileKey,
+                    .fileSizeKey
+                ]
+            )
+
+            if values?.isRegularFile == true {
+                total += Int64(values?.fileSize ?? 0)
+            }
+        }
+
+        return total
     }
 
     private static func folderSize(_ url: URL) -> Int64 {
