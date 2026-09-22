@@ -258,7 +258,7 @@ final class ArchiveViewModel: ObservableObject {
         if existingBackupCount > 0 {
             lastError = """
             Er staan nog .VAC_ORIGINAL herstelbestanden op deze bron.
-            Herstel of verwijder die eerst voordat NITRO wordt gestart.
+            Herstel of verwijder die eerst voordat MAX COMPRESSIE wordt gestart.
             """
             return
         }
@@ -270,7 +270,7 @@ final class ArchiveViewModel: ObservableObject {
         utilityProgress = 0
 
         Task {
-            statusText = "NITRO • video's scannen…"
+            statusText = "MAX COMPRESSIE • video's scannen…"
 
             let result = await Task.detached(priority: .userInitiated) {
                 MediaScanner.scan(root: root)
@@ -296,7 +296,7 @@ final class ArchiveViewModel: ObservableObject {
             var verifiedURLs: [URL] = []
             var processedIndices = Set<Int>()
 
-            statusText = "NITRO • automatische veiligheidstest…"
+            statusText = "MAX COMPRESSIE • automatische veiligheidstest…"
 
             for index in jobs.indices {
                 if verifiedURLs.count >= 3 { break }
@@ -319,7 +319,7 @@ final class ArchiveViewModel: ObservableObject {
                 case .failed(let message):
                     isRunning = false
                     lastError = """
-                    NITRO is gestopt tijdens de automatische veiligheidstest.
+                    MAX COMPRESSIE is gestopt tijdens de automatische veiligheidstest.
 
                     \(jobs[index].fileName)
                     \(message)
@@ -341,7 +341,7 @@ final class ArchiveViewModel: ObservableObject {
             }
 
             let totalCount = max(1, jobs.count)
-            statusText = "NITRO • hardware-HEVC comprimeren…"
+            statusText = "MAX COMPRESSIE • hardware-HEVC comprimeren…"
 
             for index in jobs.indices {
                 if processedIndices.contains(index) { continue }
@@ -367,12 +367,12 @@ final class ArchiveViewModel: ObservableObject {
             }
 
             utilitySummary = """
-            NITRO klaar.
+            MAX COMPRESSIE klaar.
             \(convertedCount) video's gecomprimeerd.
             \(savedBytes.storageString) ruimte bespaard.
             """
 
-            statusText = "NITRO klaar • \(savedBytes.storageString) bespaard"
+            statusText = "MAX COMPRESSIE klaar • \(savedBytes.storageString) bespaard"
         }
     }
 
