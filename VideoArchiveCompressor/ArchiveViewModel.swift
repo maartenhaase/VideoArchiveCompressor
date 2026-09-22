@@ -14,6 +14,8 @@ final class ArchiveViewModel: ObservableObject {
     @Published var statusText = "Kies een FCP Library, map of harde schijf."
     @Published var lastError: String?
     @Published var extremeSummary: String?
+    @Published var utilitySummary: String?
+    @Published var utilityProgress: Double = 0
 
     private let compressor = MediaCompressor()
 
@@ -75,6 +77,8 @@ final class ArchiveViewModel: ObservableObject {
         if url.pathExtension.lowercased() == "fcpbundle" || url.hasDirectoryPath {
             sourceURL = url
             extremeSummary = nil
+            utilitySummary = nil
+            utilityProgress = 0
             Task { await scan() }
         } else {
             lastError = "Kies een .fcpbundle, map of harde schijf."
@@ -104,6 +108,302 @@ final class ArchiveViewModel: ObservableObject {
 
     func startFullBatch() {
         start(limit: nil, keepBackups: true)
+    }
+
+    func startNitroVideoOnly() {
+        guard let root = sourceURL else {
+            lastError = "Kies eerst een harde schijf, hoofdmap of FCP Library."
+            return
+        }
+
+        guard !isRunning else { return }
+
+        if finalCutIsRunning {
+            lastError = "Sluit Final Cut Pro eerst."
+            return
+        }
+
+        if existingBackupCount > 0 {
+            lastError = """
+            Er staan nog .VAC_ORIGINAL herstelbestanden op deze bron.
+            Herstel of verwijder die eerst voordat NITRO wordt gestart.
+            """
+            return
+        }
+
+        isRunning = true
+        stopAfterCurrent = false
+        preset = .extremeOriginalResolution
+        utilitySummary = nil
+        utilityProgress = 0
+
+        Task {
+            statusText = "NITRO • video's scannen…"
+
+            let result = await Task.detached(priority: .userInitiated) {
+                MediaScanner.scan(root: root)
+            }.value
+
+            applyScanResult(result)
+
+            for i in jobs.indices {
+                jobs[i].state = .queued
+                jobs[i].progress = 0
+                jobs[i].outputBytes = nil
+            }
+
+            if jobs.isEmpty {
+                isRunning = false
+                utilitySummary = "Geen nieuwe MOV/MP4/M4V-video's gevonden."
+                return
+            }
+
+            // Safety canary: first three actually converted files keep their
+            // originals. After they pass all FCP checks, those temporary
+            // backups are removed and the rest runs at full speed.
+            var verifiedURLs: [URL] = []
+            var processedIndices = Set<Int>()
+
+            statusText = "NITRO • automatische veiligheidstest…"
+
+            for index in jobs.indices {
+                if verifiedURLs.count >= 3 { break }
+                if stopAfterCurrent { break }
+
+                let outcome = await compressOne(
+                    index: index,
+                    keepBackup: true
+                )
+
+                processedIndices.insert(index)
+
+                switch outcome {
+                case .converted:
+                    verifiedURLs.append(jobs[index].url)
+
+                case .skipped:
+                    continue
+
+                case .failed(let message):
+                    isRunning = false
+                    lastError = """
+                    NITRO is gestopt tijdens de automatische veiligheidstest.
+
+                    \(jobs[index].fileName)
+                    \(message)
+
+                    Eventuele geslaagde testclips hebben hun .VAC_ORIGINAL-backup behouden.
+                    """
+                    return
+                }
+            }
+
+            if stopAfterCurrent {
+                isRunning = false
+                statusText = "Gestopt."
+                return
+            }
+
+            for url in verifiedURLs {
+                deleteBackup(for: url)
+            }
+
+            let totalCount = max(1, jobs.count)
+            statusText = "NITRO • hardware-HEVC comprimeren…"
+
+            for index in jobs.indices {
+                if processedIndices.contains(index) { continue }
+                if stopAfterCurrent { break }
+
+                _ = await compressOne(
+                    index: index,
+                    keepBackup: false
+                )
+
+                utilityProgress = Double(index + 1) /
+                    Double(totalCount)
+            }
+
+            isRunning = false
+            utilityProgress = 1
+
+            let convertedCount = jobs.reduce(0) { count, job in
+                if case .done = job.state {
+                    return count + 1
+                }
+                return count
+            }
+
+            utilitySummary = """
+            NITRO klaar.
+            \(convertedCount) video's gecomprimeerd.
+            \(savedBytes.storageString) ruimte bespaard.
+            """
+
+            statusText = "NITRO klaar • \(savedBytes.storageString) bespaard"
+        }
+    }
+
+    func startOrganizeOnly() {
+        guard let root = sourceURL else {
+            lastError = "Kies eerst een harde schijf of hoofdmap."
+            return
+        }
+
+        guard !isRunning else { return }
+
+        if finalCutIsRunning {
+            lastError = "Sluit Final Cut Pro eerst voordat libraries worden verplaatst."
+            return
+        }
+
+        if root.pathExtension.lowercased() == "fcpbundle" {
+            lastError = "Opruimen & herstructureren is bedoeld voor een hele schijf of hoofdmap."
+            return
+        }
+
+        isRunning = true
+        utilitySummary = nil
+        utilityProgress = 0
+
+        Task {
+            statusText = "OPRUIMEN • projecten herkennen…"
+
+            let projects = await Task.detached(priority: .userInitiated) {
+                ArchiveOrganizer.discoverProjects(in: root)
+            }.value
+
+            utilityProgress = 0.25
+            statusText = "OPRUIMEN • FCP-cache verwijderen…"
+
+            let cacheBytes = await Task.detached(priority: .userInitiated) {
+                ArchiveOrganizer.purgeGeneratedFinalCutMedia(in: root)
+            }.value
+
+            utilityProgress = 0.5
+            statusText = "OPRUIMEN • losse bestanden sorteren…"
+
+            let loose = await Task.detached(priority: .userInitiated) {
+                ArchiveOrganizer.sortLooseFiles(
+                    in: root,
+                    protecting: projects
+                )
+            }.value
+
+            utilityProgress = 0.75
+            statusText = "OPRUIMEN • projecten per jaar/type ordenen…"
+
+            let organized = await Task.detached(priority: .userInitiated) {
+                ArchiveOrganizer.organizeProjects(
+                    projects,
+                    in: root
+                )
+            }.value
+
+            utilityProgress = 1
+            isRunning = false
+
+            utilitySummary = """
+            Opruimen klaar.
+            FCP-cache verwijderd: \(cacheBytes.storageString)
+            Projecten verplaatst: \(organized.moved)
+            Losse bestanden gesorteerd: \(loose.moved)
+            Overgeslagen: \(organized.skipped + loose.skipped)
+
+            Alles staat onder \(ArchiveOrganizer.archiveFolderName).
+            """
+
+            statusText = "Opruimen klaar"
+        }
+    }
+
+    func startPhotoCompressionOnly() {
+        guard let root = sourceURL else {
+            lastError = "Kies eerst een harde schijf of hoofdmap."
+            return
+        }
+
+        guard !isRunning else { return }
+
+        isRunning = true
+        utilitySummary = nil
+        utilityProgress = 0
+
+        Task {
+            statusText = "FOTO TURBO • JPEG/HEIC zoeken…"
+
+            let photos = await Task.detached(priority: .userInitiated) {
+                PhotoCompressor.discover(in: root)
+            }.value
+
+            guard !photos.isEmpty else {
+                isRunning = false
+                utilitySummary = "Geen JPEG/HEIC-foto's gevonden."
+                statusText = "Geen foto's gevonden."
+                return
+            }
+
+            statusText = "FOTO TURBO • \(photos.count) foto's comprimeren…"
+
+            var iterator = photos.makeIterator()
+            var completed = 0
+            var compressed = 0
+            var saved: Int64 = 0
+            var failed = 0
+
+            // Photos are small enough to benefit from parallel processing,
+            // unlike large videos on a mechanical archive HDD.
+            await withTaskGroup(
+                of: PhotoCompressionResult.self
+            ) { group in
+                let workers = min(6, photos.count)
+
+                for _ in 0..<workers {
+                    if let url = iterator.next() {
+                        group.addTask(priority: .userInitiated) {
+                            PhotoCompressor.compress(url)
+                        }
+                    }
+                }
+
+                while let result = await group.next() {
+                    completed += 1
+
+                    if result.didCompress {
+                        compressed += 1
+                        saved += result.savedBytes
+                    } else if result.error != nil {
+                        failed += 1
+                    }
+
+                    utilityProgress = Double(completed) /
+                        Double(photos.count)
+
+                    statusText = """
+                    FOTO TURBO • \(completed)/\(photos.count) • \(saved.storageString) bespaard
+                    """
+
+                    if let next = iterator.next() {
+                        group.addTask(priority: .userInitiated) {
+                            PhotoCompressor.compress(next)
+                        }
+                    }
+                }
+            }
+
+            utilityProgress = 1
+            isRunning = false
+
+            utilitySummary = """
+            Foto-compressie klaar.
+            \(compressed) foto's kleiner gemaakt.
+            \(saved.storageString) bespaard.
+            \(failed) mislukt.
+            Resolutie is behouden.
+            """
+
+            statusText = "Foto's klaar • \(saved.storageString) bespaard"
+        }
     }
 
     func startExtremeOneClick() {
