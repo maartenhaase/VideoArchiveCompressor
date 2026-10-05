@@ -5,6 +5,7 @@ struct ContentView: View {
     @EnvironmentObject private var model: ArchiveViewModel
     @State private var isTargeted = false
     @State private var showFlashConfirm = false
+    @State private var showBackupChoice = false
     @State private var showNitroConfirm = false
     @State private var showOrganizeConfirm = false
     // Legacy controls are no longer shown, but their private views still
@@ -40,6 +41,27 @@ struct ContentView: View {
             }
         } message: {
             Text(model.lastError ?? "")
+        }
+        .confirmationDialog(
+            "Oude herstelbackups gevonden",
+            isPresented: $showBackupChoice,
+            titleVisibility: .visible
+        ) {
+            Button("Verwijder backups en start FLASH", role: .destructive) {
+                model.deleteExistingBackupsAndStartFlash()
+            }
+
+            Button("Herstel originelen") {
+                model.restoreTestBackups()
+            }
+
+            Button("Annuleer", role: .cancel) {}
+        } message: {
+            Text(
+                "Er staan nog .VAC_ORIGINAL-bestanden op deze bron. " +
+                "Kies verwijderen als de huidige gecomprimeerde bestanden goed zijn. " +
+                "Kies herstellen als je terug wilt naar de originelen."
+            )
         }
         .confirmationDialog(
             "FLASH 720p starten?",
@@ -231,6 +253,34 @@ struct ContentView: View {
                     }
                 }
 
+                if model.existingBackupCount > 0 {
+                    HStack(spacing: 10) {
+                        Label(
+                            "\(model.existingBackupCount) herstelbackup(s) gevonden",
+                            systemImage: "externaldrive.badge.exclamationmark"
+                        )
+                        .font(.caption.weight(.medium))
+                        .foregroundColor(.orange)
+
+                        Spacer()
+
+                        Button("Herstel originelen") {
+                            model.restoreTestBackups()
+                        }
+                        .disabled(model.isRunning)
+
+                        Button("Verwijder backups", role: .destructive) {
+                            showBackupChoice = true
+                        }
+                        .disabled(model.isRunning)
+                    }
+                    .padding(10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 9)
+                            .fill(Color.orange.opacity(0.08))
+                    )
+                }
+
                 if model.unsupportedCount > 0 {
                     Label(
                         "\(model.unsupportedCount) MTS/MXF/AVI of externe links " +
@@ -274,7 +324,11 @@ struct ContentView: View {
                         subtitle: "GRUWELIJK SNEL + KLEIN. Hardware H.264, maximaal 1280×720 en ±1,5–2,2 Mbit/s. Dit is de snelste archiefmodus.",
                         buttonTitle: "STAP 2 • START 720p"
                     ) {
-                        showFlashConfirm = true
+                        if model.existingBackupCount > 0 {
+                            showBackupChoice = true
+                        } else {
+                            showFlashConfirm = true
+                        }
                     }
                     .disabled(
                         model.sourceURL == nil ||
