@@ -110,6 +110,60 @@ final class ArchiveViewModel: ObservableObject {
         start(limit: nil, keepBackups: true)
     }
 
+    func deleteExistingBackupsAndStartFlash() {
+        guard let sourceURL, !isRunning else { return }
+
+        isRunning = true
+        statusText = "Oude VAC-backups verwijderen…"
+
+        Task {
+            let deleted = await Task.detached(priority: .userInitiated) {
+                let fm = FileManager.default
+                var count = 0
+
+                guard let enumerator = fm.enumerator(
+                    at: sourceURL,
+                    includingPropertiesForKeys: [.isRegularFileKey],
+                    options: [],
+                    errorHandler: { _, _ in true }
+                ) else {
+                    return count
+                }
+
+                while let url = enumerator.nextObject() as? URL {
+                    let name = url.lastPathComponent
+
+                    if name.contains(".VAC_ORIGINAL") {
+                        do {
+                            try fm.removeItem(at: url)
+                            count += 1
+                        } catch {
+                            // Keep going; a remaining backup will be caught
+                            // by the rescan before FLASH starts.
+                        }
+                    }
+                }
+
+                return count
+            }.value
+
+            isRunning = false
+            statusText = "\(deleted) oude VAC-backup(s) verwijderd • opnieuw scannen…"
+
+            await scan()
+
+            if existingBackupCount > 0 {
+                lastError = """
+                Niet alle VAC-backups konden worden verwijderd.
+                Er staan er nog \(existingBackupCount) op deze bron.
+                """
+                return
+            }
+
+            startFlash720VideoOnly()
+        }
+    }
+
     func startFlash720VideoOnly() {
         guard let root = sourceURL else {
             lastError = "Kies eerst een harde schijf, hoofdmap of FCP Library."
